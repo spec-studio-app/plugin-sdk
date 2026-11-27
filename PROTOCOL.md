@@ -243,7 +243,7 @@ Result:
 | Plugin | `storeId` |
 |---|---|
 | plugin-json | `json:<absolute data folder>` |
-| plugin-temporal | `temporal:<address>/<namespace>/<deploy ID>` |
+| plugin-temporal | `temporal:<namespace>/<namespace ID>/<deploy ID>` (the namespace ID from `DescribeNamespace`; not the address, which differs between two hosts of one deploy) |
 
 The host shows the plugin's name, version and repo link: the app in Settings, the relay in its log at start.
 
