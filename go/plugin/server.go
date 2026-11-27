@@ -29,6 +29,9 @@ type Server struct {
 	mu       sync.Mutex
 	opened   bool
 	settings map[string]string
+	// hostKind is the host kind of the first handshake: the store may
+	// depend on it (OpenOptions.Host), so a later handshake must match it.
+	hostKind string
 	closing  bool
 	inflight sync.WaitGroup
 	done     chan struct{}
@@ -238,7 +241,7 @@ func (s *Server) handshake(ctx context.Context, c *conn, params json.RawMessage)
 	if err := s.checkSettings(p.Settings); err != nil {
 		return nil, err
 	}
-	if err := s.open(ctx, p.Settings); err != nil {
+	if err := s.open(ctx, p.Host, p.Settings); err != nil {
 		return nil, err
 	}
 	c.handshaken = true
@@ -280,12 +283,15 @@ func (s *Server) checkSettings(values map[string]string) error {
 	return nil
 }
 
-func (s *Server) open(ctx context.Context, values map[string]string) error {
+func (s *Server) open(ctx context.Context, host protocol.Host, values map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.opened {
 		if !sameSettings(s.settings, values) {
 			return protocol.NewError(protocol.BadSettings, "The plugin runs with other settings already. Restart it to change them.")
+		}
+		if host.Kind != s.hostKind {
+			return protocol.NewError(protocol.BadSettings, "The plugin runs for the host kind %s already, not %s. Use another plugin process for this host.", s.hostKind, host.Kind)
 		}
 		return nil
 	}
@@ -293,7 +299,7 @@ func (s *Server) open(ctx context.Context, values map[string]string) error {
 	for k, v := range values {
 		copied[k] = v
 	}
-	if err := s.p.Store.Open(ctx, OpenOptions{Settings: copied, Log: s.Log}); err != nil {
+	if err := s.p.Store.Open(ctx, OpenOptions{Settings: copied, Host: host, Log: s.Log}); err != nil {
 		var e *protocol.Error
 		if errors.As(err, &e) {
 			return err
@@ -302,6 +308,7 @@ func (s *Server) open(ctx context.Context, values map[string]string) error {
 	}
 	s.opened = true
 	s.settings = copied
+	s.hostKind = host.Kind
 	return nil
 }
 

@@ -56,6 +56,7 @@ You can write a plugin in any language that reads and writes JSON lines. In Go, 
 
    func (s *store) Open(ctx context.Context, o plugin.OpenOptions) error {
    	// o.Settings["address"] has a value: the SDK checked it.
+   	// o.Host.Kind is "app", "relay" or "test": use it for a default.
    	return nil
    }
    func (s *store) Close(ctx context.Context) error { return nil }

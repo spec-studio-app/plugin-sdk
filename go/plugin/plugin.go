@@ -40,6 +40,10 @@ type Plugin struct {
 type OpenOptions struct {
 	// Settings are the checked settings: each required setting has a value.
 	Settings map[string]string
+	// Host is the host of the first handshake: its kind (app, relay or test)
+	// and its version. A store can use the kind for a default, for example a
+	// default data folder.
+	Host protocol.Host
 	// Log writes to stderr. It replaces the value of each secret setting with [secret].
 	Log *slog.Logger
 }

@@ -28,6 +28,7 @@ type fakeStore struct {
 	// big makes Get return a value of this many bytes.
 	big     int
 	opened  map[string]string
+	host    protocol.Host
 	closed  bool
 	openErr error
 }
@@ -37,6 +38,7 @@ func newFake() *fakeStore { return &fakeStore{docs: map[string]protocol.StateGet
 func (f *fakeStore) Open(ctx context.Context, o plugin.OpenOptions) error {
 	o.Log.Info("open", "settings", o.Settings)
 	f.opened = o.Settings
+	f.host = o.Host
 	return f.openErr
 }
 func (f *fakeStore) Close(ctx context.Context) error { f.closed = true; return nil }
@@ -137,6 +139,20 @@ func TestHandshake(t *testing.T) {
 	}
 	if r.Limits != protocol.DefaultLimits() {
 		t.Fatalf("limits %+v", r.Limits)
+	}
+}
+
+// Open gets the host of the handshake, so a store can pick a default by host kind.
+func TestOpenGetsHost(t *testing.T) {
+	store := newFake()
+	h := start(t, plugin.Plugin{Info: testInfo, Store: store})
+	if _, err := h.c.Handshake(ctx(t), hello(nil)); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.host != (protocol.Host{Kind: "relay", Version: "0.6.0"}) {
+		t.Fatalf("host %+v, want relay 0.6.0", store.host)
 	}
 }
 
@@ -425,6 +441,28 @@ func TestHTTPOtherSettings(t *testing.T) {
 	_, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(map[string]string{"label": "b"}))
 	if !protocol.Is(err, protocol.BadSettings) || !strings.Contains(err.Error(), "other settings") {
 		t.Fatalf("other settings: %v", err)
+	}
+}
+
+// A later HTTP handshake from another host kind is refused: the store was
+// opened for the first host (OpenOptions.Host), for example with its default
+// data folder.
+func TestHTTPOtherHostKind(t *testing.T) {
+	p := plugin.Plugin{Info: testInfo, Store: newFake()}
+	s := plugin.NewServer(&p, io.Discard)
+	srv := httptest.NewServer(s.Handler("tok", nil))
+	defer srv.Close()
+	if _, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(nil)); err != nil {
+		t.Fatalf("the same host kind: %v", err)
+	}
+	other := hello(nil)
+	other.Host = protocol.Host{Kind: "test", Version: "1"}
+	_, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), other)
+	if !protocol.Is(err, protocol.BadSettings) || !strings.Contains(err.Error(), "host kind relay") {
+		t.Fatalf("another host kind: %v", err)
 	}
 }
 

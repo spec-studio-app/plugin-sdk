@@ -1,7 +1,8 @@
 // fixture is a small plugin for the tests of the conformance runner. It
 // gives state only, or state and events (--events, with no test hook). With
 // --broken-cas it accepts a write with a stale version. With --secret it
-// declares a secret setting and logs every setting at open.
+// declares a secret setting and logs every setting at open. With --watch it
+// gives watch on documents too, with no events.
 package main
 
 import (
@@ -184,10 +185,42 @@ func (s *eventsStore) DeleteStream(ctx context.Context, p protocol.EventsDeleteP
 	return protocol.EventsDeleteResult{Deleted: had}, nil
 }
 
+// watchStore gives watch on documents, with no events: a wait on a stream
+// gets refused.
+type watchStore struct {
+	*stateStore
+}
+
+func (s *watchStore) Wait(ctx context.Context, p protocol.WatchWaitParams) (protocol.WatchWaitResult, error) {
+	if p.IsStream() {
+		return protocol.WatchWaitResult{}, protocol.NewError(protocol.Refused, "The fixture gives no events, so it cannot wait on a stream.")
+	}
+	t := time.NewTicker(10 * time.Millisecond)
+	defer t.Stop()
+	for {
+		s.mu.Lock()
+		var cur *string
+		if d := s.docs[p.Collection][p.Key]; d != nil {
+			v := d.ver
+			cur = &v
+		}
+		s.mu.Unlock()
+		if (cur == nil) != (p.Version == nil) || (cur != nil && *cur != *p.Version) {
+			return protocol.WatchWaitResult{Changed: true, Version: cur}, nil
+		}
+		select {
+		case <-ctx.Done():
+			return protocol.WatchWaitResult{}, ctx.Err()
+		case <-t.C:
+		}
+	}
+}
+
 func main() {
 	broken := flag.Bool("broken-cas", false, "accept a write with a stale version")
 	secret := flag.Bool("secret", false, "declare a secret setting")
 	events := flag.Bool("events", false, "give the events capability")
+	watch := flag.Bool("watch", false, "give the watch capability on documents, with no events")
 	// Parse the fixture's flags now: they choose the store.
 	flag.String("listen", "", "")
 	flag.String("token", "", "")
@@ -200,6 +233,9 @@ func main() {
 	var store plugin.Store = state
 	if *events {
 		store = &eventsStore{stateStore: state, streams: map[string][]protocol.Event{}}
+	}
+	if *watch {
+		store = &watchStore{stateStore: state}
 	}
 	var settings []protocol.Setting
 	if *secret {
