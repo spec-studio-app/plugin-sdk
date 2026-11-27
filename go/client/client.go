@@ -526,6 +526,9 @@ func (c *Client) GetBlob(ctx context.Context, sha string) ([]byte, error) {
 
 // HasBlobs calls blobs.has.
 func (c *Client) HasBlobs(ctx context.Context, shas ...string) ([]string, error) {
+	if shas == nil {
+		shas = []string{}
+	}
 	var r protocol.BlobsHasResult
 	return r.Present, c.Call(ctx, protocol.MethodBlobsHas, protocol.BlobsHasParams{SHA256s: shas}, &r)
 }

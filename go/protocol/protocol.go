@@ -200,6 +200,29 @@ type StateGetResult struct {
 	UpdatedAt  *time.Time      `json:"updatedAt,omitempty"`
 }
 
+// MarshalJSON writes every field of a document that exists, and only
+// "exists" for one that does not.
+func (r StateGetResult) MarshalJSON() ([]byte, error) {
+	if !r.Exists {
+		return []byte(`{"exists":false}`), nil
+	}
+	attrs := r.Attributes
+	if attrs == nil {
+		attrs = Attributes{}
+	}
+	value := r.Value
+	if len(value) == 0 {
+		value = json.RawMessage("null")
+	}
+	return json.Marshal(struct {
+		Exists     bool            `json:"exists"`
+		Value      json.RawMessage `json:"value"`
+		Attributes Attributes      `json:"attributes"`
+		Version    string          `json:"version"`
+		UpdatedAt  *time.Time      `json:"updatedAt"`
+	}{true, value, attrs, r.Version, r.UpdatedAt})
+}
+
 // StatePutParams are the params of state.put. A nil ExpectedVersion means
 // that the document must not exist.
 type StatePutParams struct {
