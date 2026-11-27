@@ -222,7 +222,7 @@ The host shows the plugin's name, version and repo link: the app in Settings, th
 - The plugin checks them: each required setting has a value, and no unknown setting is present. Else the handshake fails with `bad_settings`, and the message names the setting.
 - The plugin then opens its storage with the settings. A storage that cannot open gives `bad_settings` (a wrong value) or `unavailable` (the storage does not answer).
 - **A plugin never writes the value of a secret setting** to its log, to an error message or to any result. The Go SDK replaces each secret value with `[secret]` in its log and in each error message.
-- Over HTTP, the first successful handshake opens the storage. A later handshake with other settings fails with `bad_settings`.
+- Over HTTP, the first successful handshake opens the storage. A later handshake with other settings, or from another host kind, fails with `bad_settings`: the plugin can choose a default (for example a data folder) from the host kind of the first handshake.
 
 ## 7. Health and shutdown
 
