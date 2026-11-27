@@ -35,7 +35,7 @@ This document defines the protocol between a Spec Studio host and a backend plug
 | Version | An opaque string that the plugin gives to each write of a document. |
 | Cursor | An opaque string that the plugin gives to each event. |
 
-A **name** is the name of a collection, a key or a stream. A name has 1 to 200 characters from `A-Z a-z 0-9 . _ : @ -`, starts with a letter or a digit, and does not contain `..`. The plugin refuses any other name with `refused`, so a name never makes a path.
+A **name** is the name of a collection, a key or a stream. A name has 1 to 200 characters from `A-Z a-z 0-9 . _ : @ -`, and starts with a letter or a digit. The plugin refuses any other name with `refused`. A name has no `/` and is never `.` or `..`, so a name is always one safe path segment. A name can contain `..` inside it, as a relay slug such as `fix..login` can.
 
 ## 2. Where the rules live
 
@@ -88,7 +88,8 @@ The relay can call a plugin that runs as a sidecar container.
 - The host sends each call as `POST /rpc` with `Content-Type: application/json`. The body is one JSON-RPC request. The answer is one JSON-RPC response with HTTP status 200.
 - With a token set (`--token` or the `PLUGIN_TOKEN` environment variable), each request must have `Authorization: Bearer <token>`. A request with no token or a wrong token gets HTTP 401, and the plugin does not run the call.
 - A plugin with no token refuses to listen on an address that is not a loopback address.
-- The handshake result has a `session` string. The host sends it in the `Plugin-Session` header of each later request. A request with no valid session gets `refused`, as a call before the handshake on stdio.
+- The handshake result has a `session` string. The host sends it in the `Plugin-Session` header of each later request. A request with no valid session gets `refused`, as a call before the handshake on stdio, with `data.reason: "handshake_required"`. The sessions live in the plugin's memory: after a restart of the plugin, every old session is gone. A host that gets this reason sends the handshake again and retries the call once. The TypeScript client does this.
+- The plugin refuses a request from a browser page: a request with an `Origin` header (HTTP 403), a request whose `Content-Type` is not `application/json` (HTTP 415), and, with no token, a request whose `Host` is not a loopback name (HTTP 403, against DNS rebinding).
 - `watch.wait` is one long request. Set the HTTP client timeout to more than `timeoutMs`.
 
 ### Limits
@@ -97,7 +98,7 @@ The handshake result gives the plugin's limits. The SDK's defaults:
 
 | Limit | Default | Meaning |
 |---|---|---|
-| `maxMessageBytes` | 2 MiB | The largest message in either direction. |
+| `maxMessageBytes` | 2 MiB | The largest message in either direction. A larger request gets -32600 with its own `id`. A larger answer becomes a `refused` error: ask for a smaller page (`pageSize`, `limit`) or a smaller chunk. |
 | `maxChunkBytes` | 1 MiB | The largest blob chunk, before base64. |
 | `maxPageSize` | 1000 | The largest page of `state.list` and `events.read`. |
 | `maxWaitMs` | 60000 | The longest `watch.wait`. A longer timeout is cut to this. |
@@ -114,13 +115,40 @@ Each error is a JSON-RPC error object. The plugin's own errors have a code from 
 | `conflict` | -32002 | The expected version is not the stored version. `data.version` is the stored version (`null` when no document exists). | (the host reads again and retries) |
 | `closing` | -32003 | The item is closing and takes no more changes. A thin plugin does not send it; the host's rules make it. | `SpecClosingError` |
 | `dropped` | -32004 | The item no longer exists at its source. A thin plugin does not send it; the host's rules make it. | `SpecDroppedError` |
-| `refused` | -32005 | The plugin will not do the call: no handshake, a capability that it does not give, a bad name, a bad hash, a second handshake. | `DeskRefusedError` (made by the host) |
+| `refused` | -32005 | The plugin will not do the call: no handshake (`data.reason: "handshake_required"`), a capability that it does not give, a bad name, a bad hash, a second handshake, an empty event list, an answer over the size limit. | `DeskRefusedError` (made by the host) |
 | `unavailable` | -32006 | The storage does not answer, or the plugin shuts down. The host can retry later. | `TimeoutError` |
 | `bad_settings` | -32007 | A setting is missing, unknown or wrong. The message names the setting, never its value. | (a start error) |
 
 The standard JSON-RPC errors also apply: -32700 (the line is not JSON; the connection stays open), -32600 (not a valid request), -32601 (no such method), -32602 (the params do not match the schema), -32603 (an error inside the plugin).
 
 `closing` and `dropped` are in the list so that a host maps all store errors in one place, and so a later plugin can use them.
+
+### The schemas of the methods
+
+Each method has a JSON Schema for its params and for its result. `error.json` is the schema of an error object. `scripts/schemas.mjs` writes them.
+
+| Method | Params | Result |
+|---|---|---|
+| `plugin.describe` | [plugin.describe.request.json](schema/plugin.describe.request.json) | [plugin.describe.result.json](schema/plugin.describe.result.json) |
+| `plugin.handshake` | [plugin.handshake.request.json](schema/plugin.handshake.request.json) | [plugin.handshake.result.json](schema/plugin.handshake.result.json) |
+| `plugin.ping` | [plugin.ping.request.json](schema/plugin.ping.request.json) | [plugin.ping.result.json](schema/plugin.ping.result.json) |
+| `plugin.shutdown` | [plugin.shutdown.request.json](schema/plugin.shutdown.request.json) | [plugin.shutdown.result.json](schema/plugin.shutdown.result.json) |
+| `state.get` | [state.get.request.json](schema/state.get.request.json) | [state.get.result.json](schema/state.get.result.json) |
+| `state.put` | [state.put.request.json](schema/state.put.request.json) | [state.put.result.json](schema/state.put.result.json) |
+| `state.delete` | [state.delete.request.json](schema/state.delete.request.json) | [state.delete.result.json](schema/state.delete.result.json) |
+| `state.list` | [state.list.request.json](schema/state.list.request.json) | [state.list.result.json](schema/state.list.result.json) |
+| `events.append` | [events.append.request.json](schema/events.append.request.json) | [events.append.result.json](schema/events.append.result.json) |
+| `events.read` | [events.read.request.json](schema/events.read.request.json) | [events.read.result.json](schema/events.read.result.json) |
+| `events.delete` | [events.delete.request.json](schema/events.delete.request.json) | [events.delete.result.json](schema/events.delete.result.json) |
+| `blobs.begin` | [blobs.begin.request.json](schema/blobs.begin.request.json) | [blobs.begin.result.json](schema/blobs.begin.result.json) |
+| `blobs.write` | [blobs.write.request.json](schema/blobs.write.request.json) | [blobs.write.result.json](schema/blobs.write.result.json) |
+| `blobs.commit` | [blobs.commit.request.json](schema/blobs.commit.request.json) | [blobs.commit.result.json](schema/blobs.commit.result.json) |
+| `blobs.get` | [blobs.get.request.json](schema/blobs.get.request.json) | [blobs.get.result.json](schema/blobs.get.result.json) |
+| `blobs.has` | [blobs.has.request.json](schema/blobs.has.request.json) | [blobs.has.result.json](schema/blobs.has.result.json) |
+| `blobs.delete` | [blobs.delete.request.json](schema/blobs.delete.request.json) | [blobs.delete.result.json](schema/blobs.delete.result.json) |
+| `watch.wait` | [watch.wait.request.json](schema/watch.wait.request.json) | [watch.wait.result.json](schema/watch.wait.result.json) |
+| `test.continueStream` | [test.continueStream.request.json](schema/test.continueStream.request.json) | [test.continueStream.result.json](schema/test.continueStream.result.json) |
+| (any error) | | [error.json](schema/error.json) |
 
 ## 5. Versions
 
@@ -190,6 +218,7 @@ The host shows the plugin's name, version and repo link: the app in Settings, th
 ### Settings
 
 - The host passes the settings in the handshake, from its own environment or settings. A value is a string.
+- A setting name has 1 to 64 characters from `a-z 0-9 _`, and starts with a letter. The Go SDK refuses to start a plugin that declares another name.
 - The plugin checks them: each required setting has a value, and no unknown setting is present. Else the handshake fails with `bad_settings`, and the message names the setting.
 - The plugin then opens its storage with the settings. A storage that cannot open gives `bad_settings` (a wrong value) or `unavailable` (the storage does not answer).
 - **A plugin never writes the value of a secret setting** to its log, to an error message or to any result. The Go SDK replaces each secret value with `[secret]` in its log and in each error message.
@@ -352,7 +381,7 @@ Params: `{ "stream" }`. The plugin starts a new part of the stream, as it does w
 
 1. **Keep every event.** A plugin that gives `events` keeps every event of a stream until the host calls `events.delete` for that stream. It does not lose events when the storage ends a part of a stream. For Temporal: export the history of each closed run to blobs (or other durable storage) before the namespace's retention removes it, and read from that export when a read reaches an old run.
 2. **Never log a secret.** Not in the log, not in an error message, not in a result.
-3. **Make each compare and swap atomic.** Two writes with the same expected version: exactly one succeeds.
+3. **Make each compare and swap atomic.** Two writes with the same expected version: exactly one succeeds. This applies across processes too: a host can start a second plugin process on the same storage (for example `relay pair-code` while the relay runs). A plugin whose storage cannot do an atomic compare and swap across processes must refuse to open storage that another process holds, with `unavailable`. The memory example locks its data file for this reason.
 4. **Never reuse a version or a cursor** for the same document or stream.
 5. **Write only protocol messages to stdout.** Log to stderr.
 6. **Check names.** Refuse a name that is not valid (see [Parts and words](#1-parts-and-words)). Never make a path from a name without this check.
@@ -365,8 +394,8 @@ The relay keeps its rules in `src/workflows/*Rules.ts`. With a plugin, the relay
 
 | Data | Where |
 |---|---|
-| A spec's state (`SpecWorkflowState` and the last activity time) | Document `specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `open` (stage is not `merged`), `closed`, `pendingForMac`, `pendingForCoordinator`, `deployId`. |
-| A closed spec (its memo, in the closed list) | The same document, with `closed: true`. The host deletes it after 30 days. |
+| A live spec's state (`SpecWorkflowState` and the last activity time) | Document `specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `open` (stage is not `merged`), `pendingForMac`, `pendingForCoordinator`, `deployId`. |
+| A closed spec (its memo and the time it closed) | Document `closed-specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `closedAt`. The host deletes it after 30 days. A closed spec has no `specs` document, so `SpecStore.state` gives null and `send`, `ack`, `refresh` and `gone` see no spec, as in the JSON store today. |
 | A spec's sync batches and messages | Stream `spec:<repoKey>:<slug>`. |
 | A desk's state | Document `desks` / `<repoKey>`. Attributes: `repoKey`, `pendingForMac`, `pendingForCoordinator`, `deployId`. |
 | A desk's events | Stream `desk:<repoKey>`. |
@@ -378,15 +407,15 @@ A "read, apply, write" below means: `state.get`; apply the rule from `*Rules.ts`
 
 | Method | Protocol calls |
 |---|---|
-| `SpecStore.sync` | Read, apply (`applySync`), write on `specs`; the first sync makes the document with `expectedVersion: null`. Then `events.append` on `spec:…` with the applied lines. |
+| `SpecStore.sync` | Read, apply (`applySync`), write on `specs`; the first sync makes the document with `expectedVersion: null`. Then `events.append` on `spec:…` with the applied lines. When no `specs` document exists, `state.get` on `closed-specs` first: a late line for a closed spec is not applied unless it starts a new spec (then the host deletes the `closed-specs` document). |
 | `SpecStore.state` | `state.get` on `specs`. |
 | `SpecStore.refresh` | Read, apply (`applyState`), write. |
 | `SpecStore.gone` | Read, apply (`applyGone`), write. |
 | `SpecStore.send` | Read, apply (`checkSend`, `applySend`), write; then `events.append`. |
 | `SpecStore.ack` | Read, apply (`applyAck`), write. |
-| `SpecStore.read` | `state.get`; when no message is after the cursor, `watch.wait` on the document with its version, up to `waitMs`, then `state.get` again; then read, apply (`collectRead`), write. |
-| `SpecStore.list` | `state.list` on `specs` with `withValues: true` and a filter from `ListFilter`: `repoKey`, `open: true` (for `openOnly`), `closed: false` (without `all`), `pendingForMac: true`, `pendingForCoordinator: true`. |
-| The grace period and the removal | A host timer: `state.put` with `closed: true`, `events.delete`, then `state.delete` after the keep time. |
+| `SpecStore.read` | `state.get`; when no message for Claude AI is after the cursor and the spec is not closing, `watch.wait` on the document with its version. Each write to the spec (a sync, a refresh, an ack) ends the wait, so the host reads the document again and, when there is still no new message, waits again with the new version, until `waitMs` ends in total. A deleted document (the spec closed) ends the read. Then read, apply (`collectRead`), write. |
+| `SpecStore.list` | `state.list` on `specs` with `withValues: true` and a filter from `ListFilter`: `repoKey`, `open: true` (for `openOnly`), `pendingForMac: true`, `pendingForCoordinator: true`. With `all`, also `state.list` on `closed-specs` with the `repoKey` filter. |
+| The grace period and the removal | A host timer: `state.put` on `closed-specs` with the memo, then `state.delete` on `specs`, then `events.delete` when the host does not keep the history. The host deletes the `closed-specs` document after 30 days. |
 
 ### DeskStore
 
@@ -397,7 +426,7 @@ A "read, apply, write" below means: `state.get`; apply the rule from `*Rules.ts`
 | `DeskStore.send` | Read, apply (`deskRefusal`, `applyDeskSend`), write; then `events.append` on `desk:…`. |
 | `DeskStore.ack` | Read, apply (`applyDeskAck`), write. |
 | `DeskStore.sync` | Read, apply (`applyDeskSync`), write; makes the document when it is missing. |
-| `DeskStore.read` | As `SpecStore.read`, with `collectDeskRead`. |
+| `DeskStore.read` | As `SpecStore.read` (wait again after each write with no new message), with `collectDeskRead`. |
 | `DeskStore.list` | `state.list` on `desks` with `withValues: true` and a filter from `DeskListFilter`. |
 
 ### RelayConfigStore
@@ -427,7 +456,7 @@ All methods use the one document `relay` / `config`. A method that only reads do
 | Method | Protocol calls |
 |---|---|
 | `RelayStore.start` | Start or connect to the plugin, `plugin.handshake`, log the plugin's name, version and repo. The first config: `state.put` on `relay` / `config` with `expectedVersion: null`; a `conflict` means that a config exists. |
-| `RelayStore.close` | `plugin.shutdown`. |
+| `RelayStore.close` | A stdio plugin (one for each relay process): `plugin.shutdown`. An HTTP sidecar is shared by every relay process, `relay pair-code` too: the host only stops to call it and never sends `plugin.shutdown`. The sidecar's own container stop (SIGTERM) shuts it down. |
 
 ## 15. How the app uses the protocol
 
