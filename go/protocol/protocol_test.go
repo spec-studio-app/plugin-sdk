@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/spec-studio-app/plugin-sdk/go/protocol"
 )
 
 // The methods of the relay's src/store/types.ts (relay 0.5.0).
@@ -35,7 +37,7 @@ func TestProtocolMapsEveryRelayMethod(t *testing.T) {
 func TestEveryMethodHasASchema(t *testing.T) {
 	methods := []string{
 		"plugin.describe", "plugin.handshake", "plugin.ping", "plugin.shutdown",
-		"state.get", "state.put", "state.delete", "state.list",
+		"state.get", "state.put", "state.delete", "state.list", "state.commit",
 		"events.append", "events.read", "events.delete",
 		"blobs.begin", "blobs.write", "blobs.commit", "blobs.get", "blobs.has", "blobs.delete",
 		"watch.wait", "test.continueStream",
@@ -54,6 +56,23 @@ func TestEveryMethodHasASchema(t *testing.T) {
 			if !strings.Contains(string(doc), "(schema/"+m+"."+part+".json)") {
 				t.Errorf("PROTOCOL.md does not link the %s schema of %s", part, m)
 			}
+		}
+	}
+}
+
+func TestAtLeast(t *testing.T) {
+	for _, tc := range []struct {
+		v, want string
+		ok      bool
+	}{
+		{"1.1", "1.1", true},
+		{"1.2", "1.1", true},
+		{"1.0", "1.1", false},
+		{"2.1", "1.1", false},
+		{"x", "1.1", false},
+	} {
+		if got := protocol.AtLeast(tc.v, tc.want); got != tc.ok {
+			t.Errorf("AtLeast(%s, %s) = %v, want %v", tc.v, tc.want, got, tc.ok)
 		}
 	}
 }

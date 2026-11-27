@@ -13,6 +13,8 @@
 //
 // A Store must implement StateStore. It gives a capability when it also
 // implements EventStore (events), BlobStore (blobs) or Watcher (watch).
+// It speaks protocol 1.1 (state.commit) when it implements EventStore and
+// Committer. Else it speaks only protocol 1.0.
 package plugin
 
 import (
@@ -40,7 +42,7 @@ type Plugin struct {
 type OpenOptions struct {
 	// Settings are the checked settings: each required setting has a value.
 	Settings map[string]string
-	// Host is the host of the first handshake: its kind (app, relay or test)
+	// Host is the host of the first handshake: its kind (app, relay, cli or test)
 	// and its version. A store can use the kind for a default, for example a
 	// default data folder.
 	Host protocol.Host
@@ -100,6 +102,28 @@ type Watcher interface {
 	Wait(ctx context.Context, p protocol.WatchWaitParams) (protocol.WatchWaitResult, error)
 }
 
+// Committer is the state.commit call of protocol 1.1. Commit checks the
+// expected version, writes the document and appends the events to the
+// stream in one atomic step, or does none of them. On a mismatch it returns
+// protocol.ConflictError with the stored version (nil when no document
+// exists), and writes no document and no event. p.Events can be empty: then
+// Commit writes only the document and returns no cursor.
+//
+// The SDK checks the names, the sizes and the event types first, and calls
+// Commit only when the store also implements EventStore. A store that
+// implements Committer and EventStore lists protocol 1.1.
+type Committer interface {
+	Commit(ctx context.Context, p protocol.StateCommitParams) (protocol.StateCommitResult, error)
+}
+
+// StoreIdentity is an optional interface. StoreID names the data that the
+// store reads and writes, for the storeId of the handshake (protocol 1.1).
+// Two plugin processes that read and write the same data must give the same
+// StoreID. The SDK calls it after Open. An empty string gives no storeId.
+type StoreIdentity interface {
+	StoreID() string
+}
+
 // StreamContinuer is the continueStream test hook.
 type StreamContinuer interface {
 	ContinueStream(ctx context.Context, p protocol.ContinueStreamParams) (protocol.ContinueStreamResult, error)
@@ -135,6 +159,23 @@ func TestHooks(s Store) []string {
 	return hooks
 }
 
+// CanCommit is true when the store gives state.commit: it implements
+// Committer and EventStore.
+func CanCommit(s Store) bool {
+	_, commits := s.(Committer)
+	_, events := s.(EventStore)
+	return commits && events
+}
+
+// Versions gives the protocol versions of a store: 1.0 and 1.1 when it can
+// commit, else 1.0 only.
+func Versions(s Store) []string {
+	if CanCommit(s) {
+		return append([]string(nil), protocol.Versions...)
+	}
+	return []string{protocol.Version10}
+}
+
 func isDurable(s Store) bool {
 	d, ok := s.(Durable)
 	return ok && d.Durable()
@@ -161,7 +202,7 @@ func (p *Plugin) versions() []string {
 	if len(p.ProtocolVersions) > 0 {
 		return p.ProtocolVersions
 	}
-	return protocol.Versions
+	return Versions(p.Store)
 }
 
 func (p *Plugin) describe() protocol.DescribeResult {

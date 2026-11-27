@@ -9,10 +9,30 @@ import (
 )
 
 // Version is the newest protocol version that this package speaks.
-const Version = "1.0"
+const Version = "1.1"
 
 // Versions are all the protocol versions that this package speaks.
-var Versions = []string{"1.0"}
+var Versions = []string{"1.0", "1.1"}
+
+// Version10 is protocol 1.0. A plugin with no state.commit speaks only this version.
+const Version10 = "1.0"
+
+// Version11 is protocol 1.1: it adds state.commit and the storeId of the handshake.
+const Version11 = "1.1"
+
+// AtLeast is true when the version v is want or a later minor version of the
+// same major version. A version that does not parse gives false.
+func AtLeast(v, want string) bool {
+	vm, vn, err := ParseVersion(v)
+	if err != nil {
+		return false
+	}
+	wm, wn, err := ParseVersion(want)
+	if err != nil {
+		return false
+	}
+	return vm == wm && vn >= wn
+}
 
 // The method names.
 const (
@@ -24,6 +44,7 @@ const (
 	MethodStatePut       = "state.put"
 	MethodStateDelete    = "state.delete"
 	MethodStateList      = "state.list"
+	MethodStateCommit    = "state.commit"
 	MethodEventsAppend   = "events.append"
 	MethodEventsRead     = "events.read"
 	MethodEventsDelete   = "events.delete"
@@ -123,9 +144,26 @@ type DescribeResult struct {
 	Durable          bool         `json:"durable"`
 }
 
+// The host kinds.
+const (
+	HostApp   = "app"
+	HostRelay = "relay"
+	HostCLI   = "cli"
+	HostTest  = "test"
+)
+
+// ValidHostKind is true for the host kinds of the protocol.
+func ValidHostKind(kind string) bool {
+	switch kind {
+	case HostApp, HostRelay, HostCLI, HostTest:
+		return true
+	}
+	return false
+}
+
 // Host names the host in a handshake.
 type Host struct {
-	// Kind is "app", "relay" or "test".
+	// Kind is "app", "relay", "cli" or "test".
 	Kind    string `json:"kind"`
 	Version string `json:"version"`
 }
@@ -147,6 +185,10 @@ type HandshakeResult struct {
 	Limits          Limits       `json:"limits"`
 	// Session is set over HTTP only.
 	Session string `json:"session,omitempty"`
+	// StoreID names the data that the plugin reads and writes (protocol 1.1,
+	// optional). Two plugin processes that read and write the same data give
+	// the same StoreID.
+	StoreID string `json:"storeId,omitempty"`
 }
 
 // Has is true when the plugin gives the capability.
@@ -276,7 +318,38 @@ type StateListResult struct {
 	Cursor *string    `json:"cursor"`
 }
 
-// NewEvent is one event of events.append.
+// StateCommitParams are the params of state.commit (protocol 1.1): a
+// document, the events to append to a stream, and the expected version of
+// the document. A nil ExpectedVersion means that the document must not
+// exist. Events can be empty.
+type StateCommitParams struct {
+	Collection      string          `json:"collection"`
+	Key             string          `json:"key"`
+	Value           json.RawMessage `json:"value"`
+	Attributes      Attributes      `json:"attributes,omitempty"`
+	ExpectedVersion *string         `json:"expectedVersion"`
+	Stream          string          `json:"stream"`
+	Events          []NewEvent      `json:"events"`
+}
+
+// StateCommitResult is the result of state.commit. Cursors has one cursor
+// for each event, in order, and is empty when the commit had no events.
+type StateCommitResult struct {
+	Version   string    `json:"version"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Cursors   []string  `json:"cursors"`
+}
+
+// MarshalJSON writes an empty list, not null, for no cursors.
+func (r StateCommitResult) MarshalJSON() ([]byte, error) {
+	type plain StateCommitResult
+	if r.Cursors == nil {
+		r.Cursors = []string{}
+	}
+	return MarshalNoEscape(plain(r))
+}
+
+// NewEvent is one event of events.append and state.commit.
 type NewEvent struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`

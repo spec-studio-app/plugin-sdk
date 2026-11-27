@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import { PluginClient, PluginError, isPluginError, sha256Hex, type MessageObserver } from "../src/index.js";
+import { PluginClient, PluginError, atLeast, isPluginError, sha256Hex, type MessageObserver } from "../src/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // dist/test -> the repo root
@@ -113,6 +113,35 @@ async function everyCall(c: PluginClient, ns: string): Promise<void> {
   await c.state.delete({ collection: col, key: "abc", expectedVersion: v2.version });
   assert.equal((await c.state.get({ collection: col, key: "abc" })).exists, false);
 
+  // state.commit (protocol 1.1)
+  assert.ok(c.speaks("1.1"));
+  const commitStream = `${ns}-commit`;
+  const made = await c.state.commit({ collection: col, key: "commit", value: { n: 1 }, attributes: { stage: "spec" }, expectedVersion: null, stream: commitStream, events: [] });
+  assert.deepEqual(made.cursors, []);
+  const committed = await c.state.commit({
+    collection: col,
+    key: "commit",
+    value: { n: 2 },
+    expectedVersion: made.version,
+    stream: commitStream,
+    events: [
+      { type: "activity", data: { line: 1 } },
+      { type: "activity", data: { line: 2 }, at: "2026-01-02T10:00:00Z" },
+    ],
+  });
+  assert.equal(committed.cursors.length, 2);
+  const stale = await c.state
+    .commit({ collection: col, key: "commit", value: { n: 3 }, expectedVersion: made.version, stream: commitStream, events: [{ type: "activity", data: 3 }] })
+    .catch((e: unknown) => e);
+  assert.ok(stale instanceof PluginError);
+  assert.equal(stale.code, "conflict");
+  assert.equal(stale.storedVersion, committed.version);
+  const afterCommit = await c.state.get({ collection: col, key: "commit" });
+  assert.ok(afterCommit.exists);
+  assert.deepEqual(afterCommit.value, { n: 2 });
+  assert.deepEqual((await c.events.readAll({ stream: commitStream })).map((e) => e.cursor), committed.cursors);
+  await c.state.delete({ collection: col, key: "commit", expectedVersion: committed.version });
+
   // events
   const stream = `${ns}-stream`;
   const appended = await c.events.append(stream, [
@@ -180,7 +209,8 @@ describe("stdio", () => {
     const c = await PluginClient.startStdio({ command: bin, host, log: (e) => logs.push(e), onMessage: observe });
     try {
       assert.equal(c.info.plugin.name, "memory");
-      assert.equal(c.info.protocolVersion, "1.0");
+      assert.equal(c.info.protocolVersion, "1.1");
+      assert.match(c.info.storeId ?? "", /^memory:/);
       assert.ok(logs.some((l) => l.event === "plugin_handshake" && l.repo === "https://github.com/spec-studio-app/plugin-sdk"));
       await everyCall(c, "stdio");
       await typedConflict(c, "stdio");
@@ -221,6 +251,31 @@ describe("stdio", () => {
       assert.equal((await c.ping()).status, "ok");
     } finally {
       await c.shutdown();
+    }
+  });
+
+  test("a 1.0 host gets 1.0 and no storeId from a 1.1 plugin", async () => {
+    const c = await PluginClient.startStdio({ command: bin, host: { kind: "cli", version: "test" }, protocolVersions: ["1.0"], restart: false, onMessage: observe });
+    try {
+      assert.equal(c.info.protocolVersion, "1.0");
+      assert.equal(c.info.storeId, undefined);
+      assert.equal(c.speaks("1.1"), false);
+    } finally {
+      await c.shutdown();
+    }
+  });
+
+  test("two processes on one data file give the same storeId", async () => {
+    const data = join(tmp, "store-id.json");
+    const first = await PluginClient.startStdio({ command: bin, args: ["--data", data], host, restart: false });
+    const firstId = first.info.storeId;
+    await first.shutdown();
+    const second = await PluginClient.startStdio({ command: bin, args: ["--data", data], host, restart: false });
+    try {
+      assert.ok(firstId);
+      assert.equal(second.info.storeId, firstId);
+    } finally {
+      await second.shutdown();
     }
   });
 
@@ -348,6 +403,14 @@ describe("http", () => {
     await waitFor(() => child.exitCode !== null);
     assert.equal(child.exitCode, 0);
   });
+});
+
+test("atLeast compares minor versions in one major version", () => {
+  assert.equal(atLeast("1.1", "1.1"), true);
+  assert.equal(atLeast("1.2", "1.1"), true);
+  assert.equal(atLeast("1.0", "1.1"), false);
+  assert.equal(atLeast("2.1", "1.1"), false);
+  assert.equal(atLeast("x", "1.1"), false);
 });
 
 test("every message matches its JSON Schema (R13.S2)", () => {

@@ -132,6 +132,7 @@ func (s *Server) toError(method string, err error) *protocol.Error {
 var knownMethods = map[string]bool{
 	protocol.MethodDescribe: true, protocol.MethodHandshake: true, protocol.MethodPing: true, protocol.MethodShutdown: true,
 	protocol.MethodStateGet: true, protocol.MethodStatePut: true, protocol.MethodStateDelete: true, protocol.MethodStateList: true,
+	protocol.MethodStateCommit:  true,
 	protocol.MethodEventsAppend: true, protocol.MethodEventsRead: true, protocol.MethodEventsDelete: true,
 	protocol.MethodBlobsBegin: true, protocol.MethodBlobsWrite: true, protocol.MethodBlobsCommit: true,
 	protocol.MethodBlobsGet: true, protocol.MethodBlobsHas: true, protocol.MethodBlobsDelete: true,
@@ -229,8 +230,8 @@ func (s *Server) handshake(ctx context.Context, c *conn, params json.RawMessage)
 	if s.isClosing() {
 		return nil, protocol.NewError(protocol.Unavailable, "The plugin shuts down.")
 	}
-	if p.Host.Kind != "app" && p.Host.Kind != "relay" && p.Host.Kind != "test" {
-		return nil, protocol.RPCError(protocol.RPCInvalidParams, "The host kind %q is not app, relay or test.", p.Host.Kind)
+	if !protocol.ValidHostKind(p.Host.Kind) {
+		return nil, protocol.RPCError(protocol.RPCInvalidParams, "The host kind %q is not app, relay, cli or test.", p.Host.Kind)
 	}
 	chosen, ok := protocol.ChooseVersion(p.ProtocolVersions, s.p.versions())
 	if !ok {
@@ -253,6 +254,9 @@ func (s *Server) handshake(ctx context.Context, c *conn, params json.RawMessage)
 		TestHooks:       TestHooks(s.p.Store),
 		Durable:         isDurable(s.p.Store),
 		Limits:          s.limits,
+	}
+	if id, ok := s.p.Store.(StoreIdentity); ok && protocol.AtLeast(chosen, protocol.Version11) {
+		result.StoreID = id.StoreID()
 	}
 	if c.newSession != nil {
 		result.Session = c.newSession(c)

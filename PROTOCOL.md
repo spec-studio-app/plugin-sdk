@@ -137,6 +137,7 @@ Each method has a JSON Schema for its params and for its result. `error.json` is
 | `state.put` | [state.put.request.json](schema/state.put.request.json) | [state.put.result.json](schema/state.put.result.json) |
 | `state.delete` | [state.delete.request.json](schema/state.delete.request.json) | [state.delete.result.json](schema/state.delete.result.json) |
 | `state.list` | [state.list.request.json](schema/state.list.request.json) | [state.list.result.json](schema/state.list.result.json) |
+| `state.commit` (1.1) | [state.commit.request.json](schema/state.commit.request.json) | [state.commit.result.json](schema/state.commit.result.json) |
 | `events.append` | [events.append.request.json](schema/events.append.request.json) | [events.append.result.json](schema/events.append.result.json) |
 | `events.read` | [events.read.request.json](schema/events.read.request.json) | [events.read.result.json](schema/events.read.result.json) |
 | `events.delete` | [events.delete.request.json](schema/events.delete.request.json) | [events.delete.result.json](schema/events.delete.result.json) |
@@ -294,6 +295,34 @@ Params: `{ "collection", "filter", "pageSize", "cursor", "withValues" }`
 Result: `{ "items": [{ "key", "attributes", "version", "updatedAt", "value"? }], "cursor": "…" | null }`
 
 A document that a host writes while it reads pages can show once or not at all. A document that does not change shows exactly once.
+
+### `state.commit` (protocol 1.1)
+
+`state.commit` writes a document and appends its events to a stream in one atomic step. Use it when a document and its events must never disagree, for example a spec's state and its activity.
+
+Params:
+
+```json
+{
+  "collection": "app-specs",
+  "key": "1a2b3c4d5e6f:drop-spec",
+  "value": { "stage": "build" },
+  "attributes": { "repoKey": "1a2b3c4d5e6f", "stage": "build" },
+  "expectedVersion": "v7",
+  "stream": "spec:1a2b3c4d5e6f:drop-spec",
+  "events": [{ "type": "activity", "data": { "kind": "status" }, "at": "2026-11-27T10:00:00Z" }]
+}
+```
+
+- `expectedVersion` has the same meaning as in `state.put`: `null` means "the document must not exist", and `"<v>"` means "the stored version must be `<v>`".
+- `events` has the same form as in `events.append`. `events` can be empty: then the plugin writes only the document. `attributes` is optional, as in `state.put`.
+- The check of the version, the write of the document and the append of the events are **one atomic step**. When the check is false, the plugin answers `conflict` with `data.version` set to the stored version (or `null`), and writes nothing: no document and no event.
+- When two commits give the same expected version, exactly one succeeds. The stream then has only the events of that commit.
+- The events go after every earlier event of the stream, in their order, as for `events.append`.
+- `state.commit` needs the `state` and the `events` capabilities. The capability names do not change.
+- A plugin lists `1.1` in `protocolVersions` only when it implements `state.commit`. A plugin that speaks only 1.0 answers -32601 (no such method). A host that needs `state.commit` refuses a plugin that chose 1.0 in the handshake, and tells the owner which version it needs.
+
+Result: `{ "version": "…", "updatedAt": "…", "cursors": ["…"] }`, with one cursor for each event, in order. `cursors` is an empty list when `events` is empty.
 
 ## 9. The events capability
 

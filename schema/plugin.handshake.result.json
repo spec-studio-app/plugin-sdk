@@ -94,6 +94,10 @@
     },
     "session": {
       "type": "string"
+    },
+    "storeId": {
+      "type": "string",
+      "minLength": 1
     }
   }
 }
