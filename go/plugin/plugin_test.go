@@ -510,6 +510,26 @@ func TestLargeAnswerIsRefused(t *testing.T) {
 	}
 }
 
+// A document too large for a read to return is refused at the write.
+func TestDocumentTooLargeToRead(t *testing.T) {
+	h := start(t, plugin.Plugin{Info: testInfo, Store: newFake(), Limits: protocol.Limits{MaxMessageBytes: 20000}})
+	h.c.Handshake(ctx(t), hello(nil))
+	_, err := h.c.Put(ctx(t), protocol.StatePutParams{Collection: "c", Key: "k", Value: json.RawMessage(`"` + strings.Repeat("x", 19000) + `"`)})
+	if !protocol.Is(err, protocol.Refused) || !strings.Contains(err.Error(), "blob") {
+		t.Fatalf("err %v", err)
+	}
+	// A value with < > & reads back at its own size: no HTML escapes.
+	v := json.RawMessage(`"` + strings.Repeat("<", 2000) + `"`)
+	if _, err := h.c.Put(ctx(t), protocol.StatePutParams{Collection: "c", Key: "k", Value: v}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.c.Get(ctx(t), "c", "k")
+	var back string
+	if err != nil || json.Unmarshal(got.Value, &back) != nil || back != strings.Repeat("<", 2000) {
+		t.Fatalf("get: %v", err)
+	}
+}
+
 // R9.S2: a stuck call does not stop the shutdown answer or the exit.
 func TestShutdownWithAStuckCall(t *testing.T) {
 	f := newFake()

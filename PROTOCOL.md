@@ -98,7 +98,7 @@ The handshake result gives the plugin's limits. The SDK's defaults:
 
 | Limit | Default | Meaning |
 |---|---|---|
-| `maxMessageBytes` | 2 MiB | The largest message in either direction. A larger request gets -32600 with its own `id`. A larger answer becomes a `refused` error: ask for a smaller page (`pageSize`, `limit`) or a smaller chunk. |
+| `maxMessageBytes` | 2 MiB | The largest message in either direction. A larger request gets -32600 with its own `id`. A larger answer becomes a `refused` error: ask for a smaller page (`pageSize`, `limit`) or a smaller chunk. So that a read can always return what a write stored, the SDK refuses a document (value and attributes) or an event larger than `maxMessageBytes` less 4 KiB. Store large data as a blob. |
 | `maxChunkBytes` | 1 MiB | The largest blob chunk, before base64. |
 | `maxPageSize` | 1000 | The largest page of `state.list` and `events.read`. |
 | `maxWaitMs` | 60000 | The longest `watch.wait`. A longer timeout is cut to this. |

@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -96,7 +97,7 @@ func (s *Server) handle(ctx context.Context, c *conn, raw []byte) *protocol.Resp
 	if err != nil {
 		return errorResponse(req.ID, s.toError(req.Method, err))
 	}
-	data, err := json.Marshal(result)
+	data, err := marshal(result)
 	if err != nil {
 		return errorResponse(req.ID, s.toError(req.Method, err))
 	}
@@ -367,7 +368,7 @@ func (s *Server) Shutdown(timeout time.Duration) {
 // encode marshals an answer. An answer larger than maxMessageBytes becomes
 // a refused error, so no message on the transport is over the limit.
 func (s *Server) encode(resp *protocol.Response) ([]byte, error) {
-	data, err := json.Marshal(resp)
+	data, err := marshal(resp)
 	if err != nil {
 		return nil, err
 	}
@@ -376,6 +377,34 @@ func (s *Server) encode(resp *protocol.Response) ([]byte, error) {
 	}
 	return json.Marshal(errorResponse(resp.ID, protocol.NewError(protocol.Refused,
 		"The answer has %d bytes, more than the limit of %d bytes. Ask for a smaller page or a smaller chunk.", len(data), s.limits.MaxMessageBytes)))
+}
+
+// marshal writes JSON with no HTML escapes, so a value takes the same bytes
+// in an answer as in the request that stored it.
+func marshal(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// The room that an answer needs around a stored value: the envelope, the
+// version, the time and the attributes are counted apart.
+const envelopeBytes = 4096
+
+// checkSize refuses a value that a later answer could not carry.
+func (s *Server) checkSize(what string, n int) error {
+	room := envelopeBytes
+	if room > s.limits.MaxMessageBytes/4 {
+		room = s.limits.MaxMessageBytes / 4
+	}
+	if limit := s.limits.MaxMessageBytes - room; n > limit {
+		return protocol.NewError(protocol.Refused, "The %s has %d bytes. The limit is %d bytes, so that a read can return it. Store large data as a blob.", what, n, limit)
+	}
+	return nil
 }
 
 func newID() string {

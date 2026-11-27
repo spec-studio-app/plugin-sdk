@@ -42,6 +42,10 @@ func (s *Server) dispatch(ctx context.Context, method string, raw json.RawMessag
 		if p.Attributes == nil {
 			p.Attributes = protocol.Attributes{}
 		}
+		attrs, _ := json.Marshal(p.Attributes)
+		if err := s.checkSize("document", len(p.Value)+len(attrs)); err != nil {
+			return nil, err
+		}
 		if p.ExpectedVersion != nil && *p.ExpectedVersion == "" {
 			return nil, protocol.RPCError(protocol.RPCInvalidParams, "The expected version is empty. Use null to make a new document.")
 		}
@@ -95,6 +99,9 @@ func (s *Server) dispatch(ctx context.Context, method string, raw json.RawMessag
 			}
 			if len(e.Data) == 0 {
 				p.Events[i].Data = json.RawMessage("null")
+			}
+			if err := s.checkSize("event", len(e.Data)+len(e.Type)); err != nil {
+				return nil, err
 			}
 		}
 		return s.p.Store.(EventStore).Append(ctx, p)
