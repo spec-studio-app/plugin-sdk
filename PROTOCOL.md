@@ -179,6 +179,8 @@ The negotiation does not change:
 
 A host that needs `state.commit`, as the app does, sends `1.1` and refuses a plugin that chose `1.0`. It writes nothing to that plugin, and tells the owner that the plugin is too old and that it needs protocol 1.1.
 
+Protocol 1.1 also adds the host kind `cli`. A plugin on an SDK before 1.1 checks the host kind before it chooses a version, and refuses `cli` with `-32602` ("The host kind "cli" is not app, relay or test."). So a `cli` host never sees that plugin choose `1.0`. Such a plugin lists only `1.0` in `plugin.describe`, so a host that needs 1.1 reads `protocolVersions` of `plugin.describe` before the handshake. When that list has only versions older than the one it needs, the host stops there and gives the same "too old" message as for a plugin that chose `1.0`. A host that gets `-32602` about the host kind from a plugin that it did not check this way can also take it as "too old".
+
 ## 6. The handshake and the settings
 
 ### `plugin.describe`
@@ -540,17 +542,20 @@ Both processes give the same `storeId`.
 
 | Data | Where |
 |---|---|
-| A spec's state | Document `app-specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `stage`, `status`, `repo` (the path of the home repo). |
+| A spec's state | Document `app-specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `repo` (the path of the home repo), `stage`, `status`, and `importedLine` after the import. |
 | A spec's activity | Stream `spec:<repoKey>:<slug>`. Each activity line is one event with `type: "activity"`, `data` set to the line's JSON object, and `at` set to the line's time. Only `state.commit` writes these events, together with the spec's state. The relay's own events in the same stream keep their own types. |
-| A review round | Document `app-rounds` / `<repoKey>:<slug>:<n>`. |
-| A desk's state (the outbox and what was delivered) | Document `app-desks` / `<repoKey>`. |
+| A review round | Document `app-rounds` / `<repoKey>:<slug>:<repo folder>:<n>`: `<repo folder>` is the round's folder in the spec's `reviews/` (a repo name, or `contract`), with each character outside `A-Z a-z 0-9 . _ @ -` changed to `-`; `<n>` is the round number. Example: `14529e68224f:route:app:1`. Attribute: `spec` = `<repoKey>:<slug>`. |
+| A desk's state (the outbox and what was delivered) | Document `app-desks` / `<repoKey>`. Attributes: `repoKey`, `open`. |
 | A spec's inbox of messages from Claude AI | Document `app-inbox` / `<repoKey>:<slug>`. |
-| The areas | Document `app-areas` / `<id>`. |
-| The projects | Document `app-projects` / `<id>`. |
+| A desk's inbox of messages from Claude AI | Document `app-inbox` / `desk:<repoKey>`. |
+| The areas | Document `app-areas` / `<supportKey>`. Attribute: `support` = `<supportKey>`. |
+| The projects | Document `app-projects` / `<supportKey>`. Attribute: `support` = `<supportKey>`. |
+| A value of the areas or the projects that does not decode | Document `app-areas` or `app-projects` / `<supportKey>.bad-<time>-<id>`, kept before the app starts again from an empty value. Attribute: `damaged` = `true`. |
 | The marks of the one-time import of the old files | Attribute `importedLine` on the spec's `app-specs` document: the last line of the old `activity.jsonl` that the plugin has. |
+| The recording of a spec's terminals and document snapshots | Stream `recording:<repoKey>:<slug>`. |
 | A snapshot of a spec document, a recording of a terminal, an attachment | A blob. The event that names it holds its SHA-256. |
 
-`repoKey` is the key that the relay uses for the repo, so the app and the relay name a spec the same way.
+`repoKey` is the key that the relay uses for the repo, so the app and the relay name a spec the same way: the first 12 hex characters of the SHA-256 of the repo's path. `<supportKey>` is the same key of the path of the app's support folder, so each Mac and each test copy of the app has its own areas and projects. Every name keeps the [name rule](#1-parts-and-words) of collections, keys and streams: no name has a `/`.
 
 ### A change to a spec
 
@@ -567,6 +572,8 @@ So the state and its activity never disagree: the plugin has both, or neither.
 
 | What the app needs | Protocol calls |
 |---|---|
-| The list of specs of a repo | `state.list` on `app-specs` with `withValues: true` and the filter `repo`. |
+| The list of specs of a repo | `state.list` on `app-specs` with `withValues: true` and the filter `{"repoKey": "<repoKey>"}`. |
+| The rounds of a spec, to delete them with the spec | `state.list` on `app-rounds` with the filter `{"spec": "<repoKey>:<slug>"}`. |
+| The open desks | `state.list` on `app-desks` with `withValues: true` and the filter `{"open": true}`. |
 | A change to a spec | `watch.wait` on the spec's document with its version. |
 | The scrubber and the history | `events.read` on the spec's stream with `from` and `to`, and `blobs.get` for each snapshot. |
