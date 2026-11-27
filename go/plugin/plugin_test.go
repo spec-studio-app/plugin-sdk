@@ -444,6 +444,28 @@ func TestHTTPOtherSettings(t *testing.T) {
 	}
 }
 
+// A later HTTP handshake from another host kind is refused: the store was
+// opened for the first host (OpenOptions.Host), for example with its default
+// data folder.
+func TestHTTPOtherHostKind(t *testing.T) {
+	p := plugin.Plugin{Info: testInfo, Store: newFake()}
+	s := plugin.NewServer(&p, io.Discard)
+	srv := httptest.NewServer(s.Handler("tok", nil))
+	defer srv.Close()
+	if _, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(nil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(nil)); err != nil {
+		t.Fatalf("the same host kind: %v", err)
+	}
+	other := hello(nil)
+	other.Host = protocol.Host{Kind: "test", Version: "1"}
+	_, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), other)
+	if !protocol.Is(err, protocol.BadSettings) || !strings.Contains(err.Error(), "host kind relay") {
+		t.Fatalf("another host kind: %v", err)
+	}
+}
+
 // A browser page cannot reach a loopback plugin (DNS rebinding, simple POSTs).
 func TestHTTPRefusesBrowserRequests(t *testing.T) {
 	p := plugin.Plugin{Info: testInfo, Store: newFake()}

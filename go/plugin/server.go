@@ -29,6 +29,9 @@ type Server struct {
 	mu       sync.Mutex
 	opened   bool
 	settings map[string]string
+	// hostKind is the host kind of the first handshake: the store may
+	// depend on it (OpenOptions.Host), so a later handshake must match it.
+	hostKind string
 	closing  bool
 	inflight sync.WaitGroup
 	done     chan struct{}
@@ -287,6 +290,9 @@ func (s *Server) open(ctx context.Context, host protocol.Host, values map[string
 		if !sameSettings(s.settings, values) {
 			return protocol.NewError(protocol.BadSettings, "The plugin runs with other settings already. Restart it to change them.")
 		}
+		if host.Kind != s.hostKind {
+			return protocol.NewError(protocol.BadSettings, "The plugin runs for the host kind %s already, not %s. Use another plugin process for this host.", s.hostKind, host.Kind)
+		}
 		return nil
 	}
 	copied := map[string]string{}
@@ -302,6 +308,7 @@ func (s *Server) open(ctx context.Context, host protocol.Host, values map[string
 	}
 	s.opened = true
 	s.settings = copied
+	s.hostKind = host.Kind
 	return nil
 }
 
