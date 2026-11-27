@@ -1,0 +1,36 @@
+{
+  "name": "@spec-studio-app/plugin-sdk",
+  "version": "0.1.0",
+  "description": "The host client of the Spec Studio backend plugin protocol: start or connect to a plugin, do the handshake, and make typed calls.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spec-studio-app/plugin-sdk.git",
+    "directory": "ts"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test --test-timeout=120000 dist/test/*.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "typescript": "^5.9.3"
+  }
+}
