@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
@@ -83,8 +84,8 @@ func testDescribe(e *env) error {
 		return errors.New("the plugin does not declare the state capability")
 	}
 	for _, s := range d.Settings {
-		if s.Name == "" || s.Description == "" {
-			return fmt.Errorf("the setting %q has no name or no description", s.Name)
+		if !protocol.ValidSettingName(s.Name) || s.Description == "" {
+			return fmt.Errorf("the setting %q has no valid name (a-z, 0-9, _) or no description", s.Name)
 		}
 	}
 	return nil
@@ -262,7 +263,7 @@ func testCapabilityRefused(e *env) error {
 
 func testBadName(e *env) error {
 	return e.expectInvalid(func() error {
-		for _, key := range []string{"../escape", "a/b", "a..b", "x\x00y"} {
+		for _, key := range []string{"../escape", "a/b", "..", ".", "x\x00y"} {
 			if _, err := e.c.Get(e.ctx, e.name("c"), key); expectCode(err, protocol.Refused) != nil {
 				return fmt.Errorf("the key %q: got %v; want refused", key, err)
 			}
@@ -693,10 +694,8 @@ func testEventsDelete(e *env) error {
 }
 
 func testEventsEmpty(e *env) error {
-	return e.expectInvalid(func() error {
-		_, err := e.c.Append(e.ctx, e.name("empty"))
-		return expectCode(err, protocol.Refused)
-	})
+	_, err := e.c.Append(e.ctx, e.name("empty"))
+	return expectCode(err, protocol.Refused)
 }
 
 // ---- blobs ----
@@ -1017,17 +1016,33 @@ func testShutdown(e *env) error {
 	if err := e.c.Shutdown(e.ctx, 5*time.Second); err != nil {
 		return fmt.Errorf("plugin.shutdown: %w", err)
 	}
+	// The plugin must stop to listen: an error from the plugin (unavailable
+	// during the shutdown) is not enough, the connection must fail.
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
-		ctx, cancel := e.timeout(time.Second)
-		_, err := e.c.Ping(ctx)
-		cancel()
-		if err != nil {
+		if !e.listening() {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return errors.New("the plugin still answers 6 s after plugin.shutdown")
+	return errors.New("the plugin still listens 6 s after plugin.shutdown")
+}
+
+// listening is true when the HTTP plugin still accepts a connection and answers.
+func (e *env) listening() bool {
+	ctx, cancel := e.timeout(time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.target.URL, strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"plugin.describe"}`))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
 }
 
 func contains[T comparable](list []T, v T) bool {

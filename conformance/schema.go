@@ -112,4 +112,3 @@ func (sc *schemaCheck) Checked() int {
 	defer sc.mu.Unlock()
 	return sc.checked
 }
-

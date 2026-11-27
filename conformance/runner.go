@@ -8,10 +8,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -174,6 +176,7 @@ func Run(ctx context.Context, t Target, out io.Writer) (Report, error) {
 			continue
 		}
 		res := e.runOne(tc)
+		res.Reason = e.redact(res.Reason)
 		report.Results = append(report.Results, res)
 		printResult(out, res)
 		if tc.name == "handshake" && res.Status == Fail {
@@ -184,7 +187,7 @@ func Run(ctx context.Context, t Target, out io.Writer) (Report, error) {
 		res := Result{Name: "schemas", Covers: "R13.S2", Status: Pass}
 		if bad := e.schemas.failures(); len(bad) > 0 {
 			res.Status = Fail
-			res.Reason = strings.Join(bad, "; ")
+			res.Reason = e.redact(strings.Join(bad, "; "))
 		}
 		report.Results = append(report.Results, res)
 		printResult(out, res)
@@ -290,6 +293,33 @@ func (e *env) hello(versions ...string) protocol.HandshakeParams {
 		settings[k] = v
 	}
 	return protocol.HandshakeParams{Host: protocol.Host{Kind: "test", Version: "conformance"}, ProtocolVersions: versions, Settings: settings}
+}
+
+// redact replaces the values of secret settings (all settings when the
+// plugin did not describe them) with [secret], in their raw and escaped forms,
+// so the report never shows a secret.
+func (e *env) redact(text string) string {
+	if text == "" {
+		return text
+	}
+	secret := map[string]bool{}
+	for _, s := range e.describe.Settings {
+		secret[s.Name] = s.Secret
+	}
+	for name, value := range e.target.Settings {
+		if value == "" {
+			continue
+		}
+		if known, ok := secret[name]; ok && !known {
+			continue
+		}
+		q := strconv.Quote(value)
+		j, _ := json.Marshal(value)
+		for _, v := range []string{q[1 : len(q)-1], string(j[1 : len(j)-1]), value} {
+			text = strings.ReplaceAll(text, v, "[secret]")
+		}
+	}
+	return text
 }
 
 func randomHex(n int) string {
