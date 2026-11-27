@@ -1,7 +1,6 @@
 package plugin
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -381,15 +380,7 @@ func (s *Server) encode(resp *protocol.Response) ([]byte, error) {
 
 // marshal writes JSON with no HTML escapes, so a value takes the same bytes
 // in an answer as in the request that stored it.
-func marshal(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
-}
+func marshal(v any) ([]byte, error) { return protocol.MarshalNoEscape(v) }
 
 // The room that an answer needs around a stored value: the envelope, the
 // version, the time and the attributes are counted apart.

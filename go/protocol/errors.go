@@ -1,7 +1,6 @@
 package protocol
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -108,7 +107,7 @@ func (d ErrorData) MarshalJSON() ([]byte, error) {
 	if d.Reason != "" {
 		m["reason"] = d.Reason
 	}
-	return json.Marshal(m)
+	return MarshalNoEscape(m)
 }
 
 // RPCError makes a JSON-RPC error with no plugin code.

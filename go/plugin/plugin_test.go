@@ -519,13 +519,13 @@ func TestDocumentTooLargeToRead(t *testing.T) {
 		t.Fatalf("err %v", err)
 	}
 	// A value with < > & reads back at its own size: no HTML escapes.
-	v := json.RawMessage(`"` + strings.Repeat("<", 2000) + `"`)
+	v := json.RawMessage(`"` + strings.Repeat("<", 15000) + `"`)
 	if _, err := h.c.Put(ctx(t), protocol.StatePutParams{Collection: "c", Key: "k", Value: v}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := h.c.Get(ctx(t), "c", "k")
 	var back string
-	if err != nil || json.Unmarshal(got.Value, &back) != nil || back != strings.Repeat("<", 2000) {
+	if err != nil || json.Unmarshal(got.Value, &back) != nil || back != strings.Repeat("<", 15000) {
 		t.Fatalf("get: %v", err)
 	}
 }

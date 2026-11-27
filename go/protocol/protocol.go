@@ -3,6 +3,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"time"
 )
@@ -214,7 +215,7 @@ func (r StateGetResult) MarshalJSON() ([]byte, error) {
 	if len(value) == 0 {
 		value = json.RawMessage("null")
 	}
-	return json.Marshal(struct {
+	return MarshalNoEscape(struct {
 		Exists     bool            `json:"exists"`
 		Value      json.RawMessage `json:"value"`
 		Attributes Attributes      `json:"attributes"`
@@ -413,13 +414,13 @@ func (p WatchWaitParams) IsStream() bool { return p.Stream != "" }
 // MarshalJSON writes only the fields of the target.
 func (p WatchWaitParams) MarshalJSON() ([]byte, error) {
 	if p.IsStream() {
-		return json.Marshal(struct {
+		return MarshalNoEscape(struct {
 			Stream    string  `json:"stream"`
 			After     *string `json:"after"`
 			TimeoutMs int     `json:"timeoutMs"`
 		}{p.Stream, p.After, p.TimeoutMs})
 	}
-	return json.Marshal(struct {
+	return MarshalNoEscape(struct {
 		Collection string  `json:"collection"`
 		Key        string  `json:"key"`
 		Version    *string `json:"version"`
@@ -444,7 +445,7 @@ func (r WatchWaitResult) MarshalJSON() ([]byte, error) {
 			m["version"] = r.Version
 		}
 	}
-	return json.Marshal(m)
+	return MarshalNoEscape(m)
 }
 
 // ContinueStreamParams are the params of test.continueStream.
@@ -455,6 +456,18 @@ type ContinueStreamParams struct {
 // ContinueStreamResult is the result of test.continueStream.
 type ContinueStreamResult struct {
 	Run string `json:"run"`
+}
+
+// MarshalNoEscape writes JSON with no HTML escapes (< > & stay one byte), so
+// a value takes the same bytes in an answer as in the request that stored it.
+func MarshalNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // Ptr gives a pointer to a value.

@@ -74,7 +74,7 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 	if params == nil {
 		params = struct{}{}
 	}
-	p, err := json.Marshal(params)
+	p, err := protocol.MarshalNoEscape(params)
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 // CallRaw sends params as they are.
 func (c *Client) CallRaw(ctx context.Context, method string, params json.RawMessage, out any) error {
 	id := c.nextID.Add(1)
-	req, err := json.Marshal(protocol.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: params})
+	req, err := protocol.MarshalNoEscape(protocol.Request{JSONRPC: "2.0", ID: json.RawMessage(strconv.FormatInt(id, 10)), Method: method, Params: params})
 	if err != nil {
 		return err
 	}
