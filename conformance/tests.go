@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
+	"net"
 	"net/url"
 	"reflect"
 	"strings"
@@ -1028,20 +1028,28 @@ func testShutdown(e *env) error {
 	return errors.New("the plugin still listens 6 s after plugin.shutdown")
 }
 
-// listening is true when the HTTP plugin still accepts a connection and answers.
+// listening is true when the HTTP plugin still accepts a TCP connection.
+// A slow answer does not count as stopped: only a refused connection does.
 func (e *env) listening() bool {
-	ctx, cancel := e.timeout(time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.target.URL, strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"plugin.describe"}`))
+	u, err := url.Parse(e.target.URL)
 	if err != nil {
 		return false
 	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
+	host := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
 	}
-	resp.Body.Close()
+	c, err := net.DialTimeout("tcp", host, 2*time.Second)
+	if err != nil {
+		var ne net.Error
+		// A timeout is not proof that the plugin stopped.
+		return errors.As(err, &ne) && ne.Timeout()
+	}
+	c.Close()
 	return true
 }
 
