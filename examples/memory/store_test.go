@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -31,6 +32,13 @@ func TestDataFileSurvivesARestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Append(ctx, protocol.EventsAppendParams{Stream: "spec:abc", Events: []protocol.NewEvent{{Type: "x", Data: json.RawMessage(`1`)}}})
+
+	// A second process cannot open the same data file while the first holds it.
+	second := newMemoryStore(&file)
+	if err := second.Open(ctx, plugin.OpenOptions{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}); !protocol.Is(err, protocol.Unavailable) {
+		t.Fatalf("a second open: %v, want unavailable", err)
+	}
+	m.Close(ctx)
 
 	again := opened(t, file)
 	got, _ := again.Get(ctx, protocol.StateGetParams{Collection: "specs", Key: "abc"})
@@ -62,5 +70,26 @@ func TestReadAcrossRuns(t *testing.T) {
 	after, _ := m.Read(ctx, protocol.EventsReadParams{Stream: "s", After: &a.Cursors[1], Limit: 10})
 	if len(after.Events) != 1 || after.Events[0].Type != "C" {
 		t.Fatalf("after B: %+v", after)
+	}
+}
+
+// A failed write of the data file keeps no change.
+func TestFailedWriteKeepsNoChange(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	file := filepath.Join(dir, "data.json")
+	m := opened(t, file)
+	v1, err := m.Put(ctx, protocol.StatePutParams{Collection: "c", Key: "k", Value: json.RawMessage(`1`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Chmod(dir, 0o500)
+	defer os.Chmod(dir, 0o700)
+	if _, err := m.Put(ctx, protocol.StatePutParams{Collection: "c", Key: "k", Value: json.RawMessage(`2`), ExpectedVersion: &v1.Version}); err == nil {
+		t.Skip("the folder is still writable (root?)")
+	}
+	got, _ := m.Get(ctx, protocol.StateGetParams{Collection: "c", Key: "k"})
+	if got.Version != v1.Version || string(got.Value) != "1" {
+		t.Fatalf("the failed write changed the document: %+v", got)
 	}
 }

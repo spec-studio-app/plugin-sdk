@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/spec-studio-app/plugin-sdk/go/plugin"
@@ -65,6 +66,8 @@ type memoryStore struct {
 	// changed is closed and replaced at each change, to wake the waits.
 	changed chan struct{}
 	log     interface{ Error(string, ...any) }
+	// lock holds the data file's lock while the store is open.
+	lock *os.File
 }
 
 func newMemoryStore(dataFile *string) *memoryStore {
@@ -93,6 +96,16 @@ func (m *memoryStore) Open(ctx context.Context, o plugin.OpenOptions) error {
 	if path == "" {
 		return nil
 	}
+	// One process at a time: the compare and swap is atomic in this process only.
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return protocol.NewError(protocol.Unavailable, "The memory plugin cannot open the lock file %s.lock: %s", path, err.Error())
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lock.Close()
+		return protocol.NewError(protocol.Unavailable, "Another process uses the data file %s. Stop it first.", path)
+	}
+	m.lock = lock
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil
@@ -123,12 +136,28 @@ func (m *memoryStore) Open(ctx context.Context, o plugin.OpenOptions) error {
 	return nil
 }
 
-func (m *memoryStore) Close(ctx context.Context) error { return nil }
+func (m *memoryStore) Close(ctx context.Context) error {
+	if m.lock != nil {
+		m.lock.Close()
+		m.lock = nil
+	}
+	return nil
+}
 
-// commit wakes the waits and writes the data file. Call it with mu held.
-func (m *memoryStore) commit() error {
+// commit writes the data file, then wakes the waits. When the write fails,
+// it runs undo, so the store keeps no change that the host was told failed.
+// Call it with mu held.
+func (m *memoryStore) commit(undo func()) error {
+	if err := m.write(); err != nil {
+		undo()
+		return err
+	}
 	close(m.changed)
 	m.changed = make(chan struct{})
+	return nil
+}
+
+func (m *memoryStore) write() error {
 	path := m.file()
 	if path == "" {
 		return nil
@@ -197,7 +226,13 @@ func (m *memoryStore) Put(ctx context.Context, p protocol.StatePutParams) (proto
 	}
 	d := &doc{Value: append(json.RawMessage(nil), p.Value...), Attributes: copyAttrs(p.Attributes), Version: m.nextVersion(), UpdatedAt: time.Now().UTC()}
 	col[p.Key] = d
-	if err := m.commit(); err != nil {
+	if err := m.commit(func() {
+		if cur == nil {
+			delete(col, p.Key)
+		} else {
+			col[p.Key] = cur
+		}
+	}); err != nil {
 		return protocol.StatePutResult{}, err
 	}
 	return protocol.StatePutResult{Version: d.Version, UpdatedAt: d.UpdatedAt}, nil
@@ -214,7 +249,7 @@ func (m *memoryStore) Delete(ctx context.Context, p protocol.StateDeleteParams) 
 		return protocol.StateDeleteResult{}, protocol.ConflictError(&cur.Version)
 	}
 	delete(m.docs[p.Collection], p.Key)
-	if err := m.commit(); err != nil {
+	if err := m.commit(func() { m.docs[p.Collection][p.Key] = cur }); err != nil {
 		return protocol.StateDeleteResult{}, err
 	}
 	return protocol.StateDeleteResult{Deleted: true}, nil
@@ -320,6 +355,7 @@ func (m *memoryStore) Append(ctx context.Context, p protocol.EventsAppendParams)
 		m.streams[p.Stream] = st
 	}
 	now := time.Now().UTC()
+	oldSeq, oldLen := st.Seq, len(st.Events)
 	cursors := make([]string, 0, len(p.Events))
 	for _, e := range p.Events {
 		st.Seq++
@@ -331,7 +367,7 @@ func (m *memoryStore) Append(ctx context.Context, p protocol.EventsAppendParams)
 		st.Events = append(st.Events, se)
 		cursors = append(cursors, cursorOf(se))
 	}
-	if err := m.commit(); err != nil {
+	if err := m.commit(func() { st.Seq, st.Events = oldSeq, st.Events[:oldLen] }); err != nil {
 		return protocol.EventsAppendResult{}, err
 	}
 	return protocol.EventsAppendResult{Cursors: cursors}, nil
@@ -379,11 +415,17 @@ func (m *memoryStore) DeleteStream(ctx context.Context, p protocol.EventsDeleteP
 	defer m.mu.Unlock()
 	st := m.streams[p.Stream]
 	had := st != nil && len(st.Events) > 0
+	var old []storedEvent
 	if st != nil {
 		// Keep the counters, so a cursor is never used again.
+		old = st.Events
 		st.Events = nil
 	}
-	if err := m.commit(); err != nil {
+	if err := m.commit(func() {
+		if st != nil {
+			st.Events = old
+		}
+	}); err != nil {
 		return protocol.EventsDeleteResult{}, err
 	}
 	return protocol.EventsDeleteResult{Deleted: had}, nil
@@ -399,7 +441,7 @@ func (m *memoryStore) ContinueStream(ctx context.Context, p protocol.ContinueStr
 		m.streams[p.Stream] = st
 	}
 	st.Run++
-	if err := m.commit(); err != nil {
+	if err := m.commit(func() { st.Run-- }); err != nil {
 		return protocol.ContinueStreamResult{}, err
 	}
 	return protocol.ContinueStreamResult{Run: "r" + strconv.Itoa(st.Run)}, nil
@@ -426,8 +468,15 @@ func (m *memoryStore) PutBlob(ctx context.Context, sha string, size int64, r io.
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	old, had := m.blobs[sha]
 	m.blobs[sha] = buf.Bytes()
-	return m.commit()
+	return m.commit(func() {
+		if had {
+			m.blobs[sha] = old
+		} else {
+			delete(m.blobs, sha)
+		}
+	})
 }
 
 func (m *memoryStore) GetBlob(ctx context.Context, sha string, offset int64, length int) ([]byte, int64, error) {
@@ -454,8 +503,9 @@ func (m *memoryStore) DeleteBlob(ctx context.Context, sha string) (bool, error) 
 	if _, ok := m.blobs[sha]; !ok {
 		return false, nil
 	}
+	old := m.blobs[sha]
 	delete(m.blobs, sha)
-	return true, m.commit()
+	return true, m.commit(func() { m.blobs[sha] = old })
 }
 
 // ---- watch ----
