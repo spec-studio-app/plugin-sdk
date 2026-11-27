@@ -28,6 +28,7 @@ type fakeStore struct {
 	// big makes Get return a value of this many bytes.
 	big     int
 	opened  map[string]string
+	host    protocol.Host
 	closed  bool
 	openErr error
 }
@@ -37,6 +38,7 @@ func newFake() *fakeStore { return &fakeStore{docs: map[string]protocol.StateGet
 func (f *fakeStore) Open(ctx context.Context, o plugin.OpenOptions) error {
 	o.Log.Info("open", "settings", o.Settings)
 	f.opened = o.Settings
+	f.host = o.Host
 	return f.openErr
 }
 func (f *fakeStore) Close(ctx context.Context) error { f.closed = true; return nil }
@@ -137,6 +139,20 @@ func TestHandshake(t *testing.T) {
 	}
 	if r.Limits != protocol.DefaultLimits() {
 		t.Fatalf("limits %+v", r.Limits)
+	}
+}
+
+// Open gets the host of the handshake, so a store can pick a default by host kind.
+func TestOpenGetsHost(t *testing.T) {
+	store := newFake()
+	h := start(t, plugin.Plugin{Info: testInfo, Store: store})
+	if _, err := h.c.Handshake(ctx(t), hello(nil)); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.host != (protocol.Host{Kind: "relay", Version: "0.6.0"}) {
+		t.Fatalf("host %+v, want relay 0.6.0", store.host)
 	}
 }
 

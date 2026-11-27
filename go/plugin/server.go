@@ -238,7 +238,7 @@ func (s *Server) handshake(ctx context.Context, c *conn, params json.RawMessage)
 	if err := s.checkSettings(p.Settings); err != nil {
 		return nil, err
 	}
-	if err := s.open(ctx, p.Settings); err != nil {
+	if err := s.open(ctx, p.Host, p.Settings); err != nil {
 		return nil, err
 	}
 	c.handshaken = true
@@ -280,7 +280,7 @@ func (s *Server) checkSettings(values map[string]string) error {
 	return nil
 }
 
-func (s *Server) open(ctx context.Context, values map[string]string) error {
+func (s *Server) open(ctx context.Context, host protocol.Host, values map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.opened {
@@ -293,7 +293,7 @@ func (s *Server) open(ctx context.Context, values map[string]string) error {
 	for k, v := range values {
 		copied[k] = v
 	}
-	if err := s.p.Store.Open(ctx, OpenOptions{Settings: copied, Log: s.Log}); err != nil {
+	if err := s.p.Store.Open(ctx, OpenOptions{Settings: copied, Host: host, Log: s.Log}); err != nil {
 		var e *protocol.Error
 		if errors.As(err, &e) {
 			return err
