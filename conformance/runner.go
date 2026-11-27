@@ -95,7 +95,10 @@ type test struct {
 	name   string
 	covers string
 	needs  protocol.Capability
-	run    func(e *env) error
+	// since is the protocol version that the test needs. The test runs only
+	// when the plugin chose this version or a later one in the handshake.
+	since string
+	run   func(e *env) error
 }
 
 // env is the state of one run.
@@ -220,6 +223,11 @@ func (e *env) runOne(tc test) (res Result) {
 	if tc.needs != "" && !e.info.Has(tc.needs) {
 		res.Status = Skip
 		res.Reason = fmt.Sprintf("the plugin does not declare %s", tc.needs)
+		return res
+	}
+	if tc.since != "" && !protocol.AtLeast(e.info.ProtocolVersion, tc.since) {
+		res.Status = Skip
+		res.Reason = fmt.Sprintf("the plugin chose protocol %s; the test needs %s", e.info.ProtocolVersion, tc.since)
 		return res
 	}
 	err := tc.run(e)

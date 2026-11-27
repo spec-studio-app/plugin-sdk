@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,12 @@ func tests() []test {
 		{name: "state-list-filter", covers: "R3.S5", run: testListFilter},
 		{name: "state-list-pages", covers: "R3.S6", run: testListPages},
 		{name: "state-delete", covers: "R3.S7", run: testStateDelete},
+
+		{name: "commit-writes-both", covers: "1.1", since: protocol.Version11, run: testCommitWritesBoth},
+		{name: "commit-stale-version", covers: "1.1", since: protocol.Version11, run: testCommitStale},
+		{name: "commit-no-events", covers: "1.1", since: protocol.Version11, run: testCommitNoEvents},
+		{name: "commit-create", covers: "1.1", since: protocol.Version11, run: testCommitCreate},
+		{name: "commit-race", covers: "1.1", since: protocol.Version11, run: testCommitRace},
 
 		{name: "events-order", covers: "R4.S1", needs: protocol.CapEvents, run: testEventsOrder},
 		{name: "events-after", covers: "R4.S2", needs: protocol.CapEvents, run: testEventsAfter},
@@ -957,6 +964,289 @@ func testWatchStream(e *env) error {
 		return err
 	case <-time.After(5 * time.Second):
 		return errors.New("the wait on the stream did not end within 5 s of the append")
+	}
+	return nil
+}
+
+// ---- state.commit (protocol 1.1) ----
+
+// needsCommit checks that a plugin that chose 1.1 gives events too:
+// state.commit needs state and events.
+func (e *env) needsCommit() error {
+	if !e.info.Has(protocol.CapEvents) {
+		return errors.New("the plugin chose protocol 1.1 but does not give events; state.commit needs state and events")
+	}
+	return nil
+}
+
+// readStream reads every event of a stream.
+func (e *env) readStream(stream string) ([]protocol.Event, error) {
+	return e.c.ReadAll(e.ctx, protocol.EventsReadParams{Stream: stream})
+}
+
+func cursorsOf(events []protocol.Event) []string {
+	out := []string{}
+	for _, x := range events {
+		out = append(out, x.Cursor)
+	}
+	return out
+}
+
+// A commit writes the document and appends the events, and its cursors are
+// the cursors that a read gives.
+func testCommitWritesBoth(e *env) error {
+	if err := e.needsCommit(); err != nil {
+		return err
+	}
+	col, stream := e.name("commit"), e.name("commit-stream")
+	v1, err := e.c.Put(e.ctx, protocol.StatePutParams{Collection: col, Key: "abc", Value: raw("one"), Attributes: protocol.Attributes{"stage": "spec"}})
+	if err != nil {
+		return err
+	}
+	if _, err := e.c.Append(e.ctx, stream, ev("before", 0)); err != nil {
+		return err
+	}
+	at := time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC)
+	r, err := e.c.Commit(e.ctx, protocol.StateCommitParams{
+		Collection: col, Key: "abc", Value: raw("two"), Attributes: protocol.Attributes{"stage": "plan"}, ExpectedVersion: &v1.Version,
+		Stream: stream, Events: []protocol.NewEvent{ev("A", 1), {Type: "B", Data: raw(2), At: &at}},
+	})
+	if err != nil {
+		return fmt.Errorf("state.commit: %w", err)
+	}
+	if r.Version == "" || r.Version == v1.Version || r.UpdatedAt.IsZero() {
+		return fmt.Errorf("the commit gave version %q at %v; want a new version and a time", r.Version, r.UpdatedAt)
+	}
+	if len(r.Cursors) != 2 {
+		return fmt.Errorf("the commit of 2 events gave %d cursors", len(r.Cursors))
+	}
+	got, err := e.c.Get(e.ctx, col, "abc")
+	if err != nil {
+		return err
+	}
+	if !got.Exists || got.Version != r.Version || string(got.Value) != `"two"` || got.Attributes["stage"] != "plan" {
+		return fmt.Errorf("after the commit the document is %+v; want version %s, value two and stage plan", got, r.Version)
+	}
+	events, err := e.readStream(stream)
+	if err != nil {
+		return err
+	}
+	if typesOf(events) != "before,A,B" {
+		return fmt.Errorf("the stream has %s; want before,A,B", typesOf(events))
+	}
+	if !reflect.DeepEqual(cursorsOf(events[1:]), r.Cursors) {
+		return fmt.Errorf("the commit gave the cursors %v; the read gives %v", r.Cursors, cursorsOf(events[1:]))
+	}
+	if !events[2].At.Equal(at) {
+		return fmt.Errorf("the event B has the time %v; want %v", events[2].At, at)
+	}
+	return nil
+}
+
+// A commit with a stale version writes no document and no event, and the
+// conflict gives the stored version.
+func testCommitStale(e *env) error {
+	if err := e.needsCommit(); err != nil {
+		return err
+	}
+	col, stream := e.name("commit-stale"), e.name("commit-stale-stream")
+	v1, err := e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw("one"), Stream: stream, Events: []protocol.NewEvent{ev("A", 1)}})
+	if err != nil {
+		return fmt.Errorf("state.commit: %w", err)
+	}
+	v2, err := e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw("two"), ExpectedVersion: &v1.Version, Stream: stream, Events: []protocol.NewEvent{ev("B", 2)}})
+	if err != nil {
+		return fmt.Errorf("state.commit: %w", err)
+	}
+	before, err := e.readStream(stream)
+	if err != nil {
+		return err
+	}
+	check := func(what string) error {
+		got, err := e.c.Get(e.ctx, col, "abc")
+		if err != nil {
+			return err
+		}
+		if got.Version != v2.Version || string(got.Value) != `"two"` {
+			return fmt.Errorf("%s changed the document: %+v", what, got)
+		}
+		after, err := e.readStream(stream)
+		if err != nil {
+			return err
+		}
+		if typesOf(after) != typesOf(before) || !reflect.DeepEqual(cursorsOf(after), cursorsOf(before)) {
+			return fmt.Errorf("%s changed the stream: %s; want %s", what, typesOf(after), typesOf(before))
+		}
+		return nil
+	}
+
+	// A stale version.
+	_, err = e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw("three"), ExpectedVersion: &v1.Version, Stream: stream, Events: []protocol.NewEvent{ev("C", 3), ev("D", 4)}})
+	if err := expectCode(err, protocol.Conflict); err != nil {
+		return fmt.Errorf("a commit with a stale version: %w", err)
+	}
+	var pe *protocol.Error
+	if errors.As(err, &pe) && (pe.Data.Version == nil || *pe.Data.Version != v2.Version) {
+		return fmt.Errorf("the conflict does not give the stored version %s", v2.Version)
+	}
+	if err := check("a commit with a stale version"); err != nil {
+		return err
+	}
+
+	// expectedVersion null on a document that exists.
+	_, err = e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw("four"), Stream: stream, Events: []protocol.NewEvent{ev("E", 5)}})
+	if err := expectCode(err, protocol.Conflict); err != nil {
+		return fmt.Errorf("a commit with null on a document that exists: %w", err)
+	}
+	if err := check("a commit with null on a document that exists"); err != nil {
+		return err
+	}
+
+	// An expected version on a missing document: a conflict with version null,
+	// and no document and no event.
+	other := e.name("commit-stale-other")
+	_, err = e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "nothing", Value: raw(1), ExpectedVersion: &v1.Version, Stream: other, Events: []protocol.NewEvent{ev("F", 6)}})
+	if err := expectCode(err, protocol.Conflict); err != nil {
+		return fmt.Errorf("a commit with a version on a missing document: %w", err)
+	}
+	if errors.As(err, &pe) && pe.Data.Version != nil {
+		return fmt.Errorf("the conflict on a missing document gives the version %q; want null", *pe.Data.Version)
+	}
+	if got, err := e.c.Get(e.ctx, col, "nothing"); err != nil || got.Exists {
+		return fmt.Errorf("the failed commit made the document: %+v, %v", got, err)
+	}
+	if events, err := e.readStream(other); err != nil || len(events) != 0 {
+		return fmt.Errorf("the failed commit appended %d events (%v)", len(events), err)
+	}
+	return nil
+}
+
+// A commit with no events writes the document only and gives no cursor.
+func testCommitNoEvents(e *env) error {
+	if err := e.needsCommit(); err != nil {
+		return err
+	}
+	col, stream := e.name("commit-none"), e.name("commit-none-stream")
+	v1, err := e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw("one"), Stream: stream, Events: []protocol.NewEvent{}})
+	if err != nil {
+		return fmt.Errorf("state.commit with no events: %w", err)
+	}
+	if v1.Cursors == nil || len(v1.Cursors) != 0 {
+		return fmt.Errorf("a commit with no events gave the cursors %v; want an empty list", v1.Cursors)
+	}
+	v2, err := e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw("two"), ExpectedVersion: &v1.Version, Stream: stream, Events: []protocol.NewEvent{}})
+	if err != nil {
+		return fmt.Errorf("a second commit with no events: %w", err)
+	}
+	if v2.Version == v1.Version {
+		return errors.New("a commit with no events did not make a new version")
+	}
+	got, err := e.c.Get(e.ctx, col, "abc")
+	if err != nil {
+		return err
+	}
+	if got.Version != v2.Version || string(got.Value) != `"two"` {
+		return fmt.Errorf("after the commit the document is %+v; want version %s", got, v2.Version)
+	}
+	events, err := e.readStream(stream)
+	if err != nil {
+		return err
+	}
+	if len(events) != 0 {
+		return fmt.Errorf("a commit with no events appended %d events", len(events))
+	}
+	return nil
+}
+
+// A commit with expectedVersion null makes the document and appends its events.
+func testCommitCreate(e *env) error {
+	if err := e.needsCommit(); err != nil {
+		return err
+	}
+	col, stream := e.name("commit-create"), e.name("commit-create-stream")
+	r, err := e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw(map[string]int{"n": 1}), Attributes: protocol.Attributes{"repoKey": "r1"}, ExpectedVersion: nil, Stream: stream, Events: []protocol.NewEvent{ev("A", 1)}})
+	if err != nil {
+		return fmt.Errorf("state.commit with null: %w", err)
+	}
+	got, err := e.c.Get(e.ctx, col, "abc")
+	if err != nil {
+		return err
+	}
+	if !got.Exists || got.Version != r.Version || string(got.Value) != `{"n":1}` || got.Attributes["repoKey"] != "r1" {
+		return fmt.Errorf("the commit did not make the document: %+v", got)
+	}
+	events, err := e.readStream(stream)
+	if err != nil {
+		return err
+	}
+	if typesOf(events) != "A" || !reflect.DeepEqual(cursorsOf(events), r.Cursors) {
+		return fmt.Errorf("the stream has %s with %v; want A with %v", typesOf(events), cursorsOf(events), r.Cursors)
+	}
+	return nil
+}
+
+// Commits in a race with the same expected version: exactly one wins, and
+// the stream has only the winner's events.
+func testCommitRace(e *env) error {
+	if err := e.needsCommit(); err != nil {
+		return err
+	}
+	col, stream := e.name("commit-race"), e.name("commit-race-stream")
+	v1, err := e.c.Commit(e.ctx, protocol.StateCommitParams{Collection: col, Key: "abc", Value: raw(-1), Stream: stream, Events: []protocol.NewEvent{}})
+	if err != nil {
+		return fmt.Errorf("state.commit: %w", err)
+	}
+	const writers = 20
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok, conflicts, winner := 0, 0, -1
+	var won protocol.StateCommitResult
+	var other error
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			r, err := e.c.Commit(e.ctx, protocol.StateCommitParams{
+				Collection: col, Key: "abc", Value: raw(i), ExpectedVersion: &v1.Version, Stream: stream,
+				Events: []protocol.NewEvent{ev(fmt.Sprintf("w%d-1", i), i), ev(fmt.Sprintf("w%d-2", i), i)},
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				ok++
+				winner, won = i, r
+			case protocol.Is(err, protocol.Conflict):
+				conflicts++
+			default:
+				other = err
+			}
+		}(i)
+	}
+	wg.Wait()
+	if other != nil {
+		return other
+	}
+	if ok != 1 || conflicts != writers-1 {
+		return fmt.Errorf("%d commits with the same expected version: %d succeeded and %d got conflict; want 1 and %d", writers, ok, conflicts, writers-1)
+	}
+	got, err := e.c.Get(e.ctx, col, "abc")
+	if err != nil {
+		return err
+	}
+	if got.Version != won.Version || string(got.Value) != strconv.Itoa(winner) {
+		return fmt.Errorf("the document is %s at %s; want the winner's value %d at %s", got.Value, got.Version, winner, won.Version)
+	}
+	events, err := e.readStream(stream)
+	if err != nil {
+		return err
+	}
+	want := fmt.Sprintf("w%d-1,w%d-2", winner, winner)
+	if typesOf(events) != want {
+		return fmt.Errorf("the stream has %s; want only the winner's events %s", typesOf(events), want)
+	}
+	if !reflect.DeepEqual(cursorsOf(events), won.Cursors) {
+		return fmt.Errorf("the winner got the cursors %v; the read gives %v", won.Cursors, cursorsOf(events))
 	}
 	return nil
 }

@@ -71,12 +71,15 @@ func TestMemoryOverStdio(t *testing.T) {
 	if report.Failed() {
 		t.Fatalf("the memory plugin failed:\n%s", out)
 	}
-	for _, name := range []string{"restart", "events-continued-run", "blobs-large", "watch-change", "schemas", "shutdown"} {
+	for _, name := range append([]string{"restart", "events-continued-run", "blobs-large", "watch-change", "schemas", "shutdown"}, commitTests...) {
 		if s := status(report, name); s != conformance.Pass {
 			t.Errorf("%s: %s, want pass\n%s", name, s, out)
 		}
 	}
 }
+
+// The tests of state.commit (protocol 1.1).
+var commitTests = []string{"commit-writes-both", "commit-stale-version", "commit-no-events", "commit-create", "commit-race"}
 
 // R10.S1, R8.S2
 func TestMemoryOverHTTP(t *testing.T) {
@@ -90,6 +93,11 @@ func TestMemoryOverHTTP(t *testing.T) {
 	report, out := run(t, conformance.Target{URL: "http://" + addr + "/rpc", Token: "tok"})
 	if report.Failed() {
 		t.Fatalf("the memory plugin failed over HTTP:\n%s", out)
+	}
+	for _, name := range commitTests {
+		if s := status(report, name); s != conformance.Pass {
+			t.Errorf("%s: %s, want pass\n%s", name, s, out)
+		}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -151,6 +159,31 @@ func TestContinuedRunNeedsTheHook(t *testing.T) {
 	}
 	if s := status(report, "events-order"); s != conformance.Pass {
 		t.Fatalf("events-order: %s, want pass", s)
+	}
+	// A plugin with events and no state.commit speaks 1.0: the commit tests skip.
+	for _, name := range commitTests {
+		if s := status(report, name); s != conformance.Skip {
+			t.Errorf("%s: %s, want skip\n%s", name, s, out)
+		}
+	}
+	if !strings.Contains(out, "the plugin chose protocol 1.0") {
+		t.Errorf("the output does not say why the commit tests skip:\n%s", out)
+	}
+}
+
+// A state.commit that appends the events before the version check fails the
+// tests of a conflict and of a race.
+func TestBrokenCommitFails(t *testing.T) {
+	report, out := run(t, conformance.Target{Command: []string{filepath.Join(bin, "fixture"), "--broken-commit"}})
+	for _, name := range []string{"commit-stale-version", "commit-race"} {
+		if s := status(report, name); s != conformance.Fail {
+			t.Errorf("%s: %s, want fail\n%s", name, s, out)
+		}
+	}
+	for _, name := range []string{"commit-writes-both", "commit-no-events", "commit-create"} {
+		if s := status(report, name); s != conformance.Pass {
+			t.Errorf("%s: %s, want pass\n%s", name, s, out)
+		}
 	}
 }
 
