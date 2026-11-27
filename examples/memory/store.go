@@ -128,6 +128,15 @@ func (m *memoryStore) load(path string) error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return protocol.NewError(protocol.BadSettings, "The data file %s is not valid JSON. Correct it or remove it.", path)
 	}
+	// Decode everything first: a bad file changes nothing in the store.
+	blobs := map[string][]byte{}
+	for sha, b64 := range snap.Blobs {
+		b, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return protocol.NewError(protocol.BadSettings, "The data file %s has a blob that is not base64.", path)
+		}
+		blobs[sha] = b
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.counter = snap.Counter
@@ -137,13 +146,7 @@ func (m *memoryStore) load(path string) error {
 	if snap.Streams != nil {
 		m.streams = snap.Streams
 	}
-	for sha, b64 := range snap.Blobs {
-		b, err := base64.StdEncoding.DecodeString(b64)
-		if err != nil {
-			return protocol.NewError(protocol.BadSettings, "The data file %s has a blob that is not base64.", path)
-		}
-		m.blobs[sha] = b
-	}
+	m.blobs = blobs
 	return nil
 }
 
@@ -177,7 +180,8 @@ func (m *memoryStore) write() error {
 	for sha, b := range m.blobs {
 		snap.Blobs[sha] = base64.StdEncoding.EncodeToString(b)
 	}
-	data, err := json.Marshal(snap)
+	// No HTML escapes: a value keeps its size after a restart.
+	data, err := protocol.MarshalNoEscape(snap)
 	if err != nil {
 		return err
 	}

@@ -82,6 +82,13 @@ func TestFailedOpenReleasesTheLock(t *testing.T) {
 	if err := m.Open(context.Background(), o); !protocol.Is(err, protocol.BadSettings) {
 		t.Fatalf("open of a bad file: %v", err)
 	}
+	os.WriteFile(file, []byte(`{"docs":{"c":{"k":{"value":1,"version":"v1"}}},"blobs":{"x":"!!"}}`), 0o600)
+	if err := m.Open(context.Background(), o); !protocol.Is(err, protocol.BadSettings) {
+		t.Fatalf("open of a file with a bad blob: %v", err)
+	}
+	if got, _ := m.Get(context.Background(), protocol.StateGetParams{Collection: "c", Key: "k"}); got.Exists {
+		t.Fatal("a bad file changed the store")
+	}
 	os.WriteFile(file, []byte("{}"), 0o600)
 	if err := m.Open(context.Background(), o); err != nil {
 		t.Fatalf("the second open: %v", err)
