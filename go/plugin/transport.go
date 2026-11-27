@@ -21,15 +21,15 @@ import (
 )
 
 // ServeStdio serves one connection on in and out: one JSON message per line.
-// It returns after a plugin.shutdown, or after in closes (with a shutdown of
-// 5 seconds).
+// It returns after a plugin.shutdown, after a shutdown for another reason
+// (a signal), or after in closes (with a shutdown of 5 seconds).
 func (s *Server) ServeStdio(in io.Reader, out io.Writer) error {
 	c := &conn{}
 	var writeMu sync.Mutex
 	var calls sync.WaitGroup
 	stopped := make(chan struct{})
 	writeLine := func(resp *protocol.Response) {
-		data, err := json.Marshal(resp)
+		data, err := s.encode(resp)
 		if err != nil {
 			s.Log.Error("cannot encode an answer", "error", err.Error())
 			return
@@ -37,6 +37,19 @@ func (s *Server) ServeStdio(in io.Reader, out io.Writer) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
 		out.Write(append(data, '\n'))
+	}
+	// waitCalls waits for the calls in progress, for at most d.
+	waitCalls := func(d time.Duration) {
+		done := make(chan struct{})
+		go func() {
+			calls.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(d):
+			s.Log.Warn("calls still in progress at the end of the shutdown")
+		}
 	}
 
 	lines := make(chan []byte)
@@ -53,7 +66,10 @@ func (s *Server) ServeStdio(in io.Reader, out io.Writer) error {
 				}
 			}
 			if err != nil {
-				readErr <- err
+				select {
+				case readErr <- err:
+				default:
+				}
 				return
 			}
 		}
@@ -63,39 +79,69 @@ func (s *Server) ServeStdio(in io.Reader, out io.Writer) error {
 		select {
 		case line := <-lines:
 			if len(line) > s.limits.MaxMessageBytes {
-				writeLine(errorResponse(nil, protocol.RPCError(protocol.RPCInvalidRequest, "The message has %d bytes. The limit is %d bytes.", len(line), s.limits.MaxMessageBytes)))
+				writeLine(errorResponse(requestID(line), protocol.RPCError(protocol.RPCInvalidRequest, "The message has %d bytes. The limit is %d bytes.", len(line), s.limits.MaxMessageBytes)))
 				continue
 			}
 			if isShutdown(line) {
-				// Answer the shutdown after every other answer.
-				resp := s.handle(context.Background(), c, line)
-				calls.Wait()
-				if resp != nil {
-					writeLine(resp)
-				}
+				timeout := shutdownTimeout(line)
+				start := time.Now()
+				resp := s.handle(s.calls, c, line)
 				if resp != nil && resp.Error == nil {
+					// Answer the shutdown after the other answers, within the timeout.
+					waitCalls(timeout - time.Since(start))
+					writeLine(resp)
 					close(stopped)
 					return nil
+				}
+				if resp != nil {
+					writeLine(resp)
 				}
 				continue
 			}
 			calls.Add(1)
 			go func(line []byte) {
 				defer calls.Done()
-				if resp := s.handle(context.Background(), c, line); resp != nil {
+				if resp := s.handle(s.calls, c, line); resp != nil {
 					writeLine(resp)
 				}
 			}(line)
+		case <-s.Done():
+			// A shutdown that did not come on this connection: a signal.
+			waitCalls(time.Second)
+			close(stopped)
+			return nil
 		case err := <-readErr:
 			if !errors.Is(err, io.EOF) {
 				s.Log.Error("cannot read stdin", "error", err.Error())
 			}
 			s.Shutdown(5 * time.Second)
-			calls.Wait()
+			waitCalls(time.Second)
 			close(stopped)
 			return nil
 		}
 	}
+}
+
+// requestID reads the id of a request, or gives nil.
+func requestID(line []byte) json.RawMessage {
+	var head struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if json.Unmarshal(line, &head) != nil {
+		return nil
+	}
+	return head.ID
+}
+
+func shutdownTimeout(line []byte) time.Duration {
+	var req struct {
+		Params protocol.ShutdownParams `json:"params"`
+	}
+	json.Unmarshal(line, &req)
+	if req.Params.TimeoutMs <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(req.Params.TimeoutMs) * time.Millisecond
 }
 
 func isShutdown(line []byte) bool {
@@ -129,10 +175,25 @@ func (s *Server) Handler(token string, onShutdown func()) http.Handler {
 			http.Error(w, "The bearer token is missing or wrong.", http.StatusUnauthorized)
 			return
 		}
+		// A browser page must not reach the plugin: refuse a request from a
+		// browser (Origin), a request that is not JSON (a simple cross-origin
+		// POST), and, with no token, a Host that is not a loopback name (DNS rebinding).
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "The plugin does not take requests from a browser page.", http.StatusForbidden)
+			return
+		}
+		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(strings.ToLower(ct), "application/json") {
+			http.Error(w, "Send Content-Type: application/json.", http.StatusUnsupportedMediaType)
+			return
+		}
+		if token == "" && !isLoopbackHost(r.Host) {
+			http.Error(w, "With no token, the plugin takes requests only for a loopback host name.", http.StatusForbidden)
+			return
+		}
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, int64(s.limits.MaxMessageBytes)))
 		var resp *protocol.Response
 		if err != nil {
-			resp = errorResponse(nil, protocol.RPCError(protocol.RPCInvalidRequest, "The message is larger than %d bytes, or it did not arrive.", s.limits.MaxMessageBytes))
+			resp = errorResponse(requestID(body), protocol.RPCError(protocol.RPCInvalidRequest, "The message is larger than %d bytes, or it did not arrive.", s.limits.MaxMessageBytes))
 		} else {
 			mu.Lock()
 			c := sessions[r.Header.Get("Plugin-Session")]
@@ -146,7 +207,11 @@ func (s *Server) Handler(token string, onShutdown func()) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		data, _ := json.Marshal(resp)
+		data, err := s.encode(resp)
+		if err != nil {
+			http.Error(w, "The plugin cannot encode the answer.", http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(data)
 		if resp.Error == nil && isShutdown(body) && onShutdown != nil {
@@ -191,6 +256,19 @@ func (s *Server) serveListener(ctx context.Context, ln net.Listener, token strin
 	return nil
 }
 
+// isLoopbackHost is true for a Host header that names a loopback address.
+func isLoopbackHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func isLoopback(addr string) bool {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -227,6 +305,11 @@ func Run(ctx context.Context, p Plugin, o Options) error {
 	}
 	if p.Store == nil {
 		return errors.New("the plugin has no store")
+	}
+	for _, st := range p.Settings {
+		if !protocol.ValidSettingName(st.Name) {
+			return fmt.Errorf("the setting name %q is not valid: use a-z, 0-9 and _, and start with a letter", st.Name)
+		}
 	}
 	s := NewServer(&p, o.Stderr)
 	if o.Listen != "" {

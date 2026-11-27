@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 )
 
 // Code is the word of a plugin error (data.code).
@@ -51,7 +50,14 @@ type ErrorData struct {
 	Code Code `json:"code"`
 	// Version is the stored version, for a conflict.
 	Version *string `json:"version,omitempty"`
+	// Reason gives more detail for some errors: ReasonHandshakeRequired.
+	Reason string `json:"reason,omitempty"`
 }
+
+// ReasonHandshakeRequired is the reason of a refused call before the
+// handshake. Over HTTP, a host that gets it sends the handshake again (the
+// plugin restarted and lost the session) and retries the call.
+const ReasonHandshakeRequired = "handshake_required"
 
 // Error is a JSON-RPC error. A plugin error has Data with its Code.
 type Error struct {
@@ -99,6 +105,9 @@ func (d ErrorData) MarshalJSON() ([]byte, error) {
 	} else if d.Version != nil {
 		m["version"] = *d.Version
 	}
+	if d.Reason != "" {
+		m["reason"] = d.Reason
+	}
 	return json.Marshal(m)
 }
 
@@ -121,17 +130,24 @@ func Is(err error, c Code) bool { return CodeOf(err) == c }
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$`)
 
-// ValidName is true for a valid name of a collection, a key or a stream.
+// ValidName is true for a valid name of a collection, a key or a stream. A
+// name has no "/" and starts with a letter or a digit, so it is never "." or
+// ".." and it is always one path segment.
 func ValidName(s string) bool {
-	return nameRE.MatchString(s) && !strings.Contains(s, "..")
+	return nameRE.MatchString(s)
 }
+
+var settingRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// ValidSettingName is true for a valid setting name: a-z, 0-9 and _, from a letter.
+func ValidSettingName(s string) bool { return settingRE.MatchString(s) }
 
 // CheckName gives a refused error for a name that is not valid.
 func CheckName(what, s string) error {
 	if ValidName(s) {
 		return nil
 	}
-	return NewError(Refused, "The %s name %q is not valid. Use 1 to 200 characters from A-Z a-z 0-9 . _ : @ -, with no \"..\".", what, s)
+	return NewError(Refused, "The %s name %q is not valid. Use 1 to 200 characters from A-Z a-z 0-9 . _ : @ -, and start with a letter or a digit.", what, s)
 }
 
 var shaRE = regexp.MustCompile(`^[0-9a-f]{64}$`)

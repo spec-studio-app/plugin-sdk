@@ -50,5 +50,10 @@ func TestEveryMethodHasASchema(t *testing.T) {
 		if !strings.Contains(string(doc), "`"+m) {
 			t.Errorf("PROTOCOL.md does not describe %s", m)
 		}
+		for _, part := range []string{"request", "result"} {
+			if !strings.Contains(string(doc), "(schema/"+m+"."+part+".json)") {
+				t.Errorf("PROTOCOL.md does not link the %s schema of %s", part, m)
+			}
+		}
 	}
 }

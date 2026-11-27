@@ -44,10 +44,10 @@ type transport interface {
 
 // Client is one connection to a plugin.
 type Client struct {
-	t        transport
-	nextID   atomic.Int64
-	observe  Observer
-	obsMu    sync.Mutex
+	t       transport
+	nextID  atomic.Int64
+	observe Observer
+	obsMu   sync.Mutex
 	// Info is the handshake result, after Handshake.
 	Info protocol.HandshakeResult
 }
@@ -131,10 +131,10 @@ type stdio struct {
 	pending map[string]chan []byte
 	// nullID gets the answers with id null (a parse error).
 	nullID chan []byte
-	closed  chan struct{}
-	err     error
-	cmd     *exec.Cmd
-	exited  chan struct{}
+	closed chan struct{}
+	err    error
+	cmd    *exec.Cmd
+	exited chan struct{}
 }
 
 // Process is a plugin that the client started.
@@ -438,6 +438,9 @@ func (c *Client) List(ctx context.Context, p protocol.StateListParams) (protocol
 
 // Append calls events.append.
 func (c *Client) Append(ctx context.Context, stream string, events ...protocol.NewEvent) (protocol.EventsAppendResult, error) {
+	if events == nil {
+		events = []protocol.NewEvent{}
+	}
 	var r protocol.EventsAppendResult
 	return r, c.Call(ctx, protocol.MethodEventsAppend, protocol.EventsAppendParams{Stream: stream, Events: events}, &r)
 }

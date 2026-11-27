@@ -10,7 +10,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "schema");
 const BASE = "https://spec-studio-app.github.io/plugin-sdk/schema/";
 
-const name = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$", not: { pattern: "\\.\\." } };
+const name = { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$" };
 const version = { type: "string", minLength: 1 };
 const protocolVersion = { type: "string", pattern: "^[0-9]+\\.[0-9]+$" };
 const time = { type: "string", format: "date-time" };
@@ -132,8 +132,8 @@ const methods = {
     request: obj(["stream", "events"], {
       stream: name,
       events: {
+        // An empty list is valid JSON for the schema; the plugin refuses it with `refused`.
         type: "array",
-        minItems: 1,
         items: obj(["type", "data"], { type: { type: "string", minLength: 1, maxLength: 200 }, data: {}, at: time }),
       },
     }),
@@ -216,6 +216,7 @@ const error = {
     data: obj(["code"], {
       code: { enum: ["not_found", "conflict", "closing", "dropped", "refused", "unavailable", "bad_settings"] },
       version: { type: ["string", "null"] },
+      reason: { type: "string" },
     }),
   },
 };

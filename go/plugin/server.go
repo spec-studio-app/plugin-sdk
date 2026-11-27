@@ -36,6 +36,9 @@ type Server struct {
 	// stop ends each watch at shutdown.
 	stop       context.Context
 	cancelStop context.CancelFunc
+	// calls is the context of the stdio calls. The shutdown cancels it at its timeout.
+	calls       context.Context
+	cancelCalls context.CancelFunc
 
 	uploads *uploads
 }
@@ -53,14 +56,17 @@ func NewServer(p *Plugin, stderr io.Writer) *Server {
 	red := &redactor{}
 	log := slog.New(slog.NewTextHandler(&redactWriter{r: red, out: stderr}, nil))
 	stop, cancel := context.WithCancel(context.Background())
+	calls, cancelCalls := context.WithCancel(context.Background())
 	s := &Server{
-		p:          p,
-		limits:     p.limits(),
-		red:        red,
-		Log:        log,
-		done:       make(chan struct{}),
-		stop:       stop,
-		cancelStop: cancel,
+		calls:       calls,
+		cancelCalls: cancelCalls,
+		p:           p,
+		limits:      p.limits(),
+		red:         red,
+		Log:         log,
+		done:        make(chan struct{}),
+		stop:        stop,
+		cancelStop:  cancel,
 	}
 	s.uploads = newUploads(s)
 	return s
@@ -146,7 +152,9 @@ func (s *Server) call(ctx context.Context, c *conn, method string, params json.R
 	ready := c.handshaken
 	c.mu.Unlock()
 	if !ready {
-		return nil, protocol.NewError(protocol.Refused, "Send plugin.handshake first.")
+		e := protocol.NewError(protocol.Refused, "Send plugin.handshake first.")
+		e.Data.Reason = protocol.ReasonHandshakeRequired
+		return nil, e
 	}
 	if method == protocol.MethodShutdown {
 		var p protocol.ShutdownParams
@@ -340,6 +348,8 @@ func (s *Server) Shutdown(timeout time.Duration) {
 	case <-waited:
 	case <-timer.C:
 		s.Log.Warn("shutdown timeout: calls still in progress", "timeoutMs", timeout.Milliseconds())
+		// Cancel the calls that did not end, so they stop at the store.
+		s.cancelCalls()
 	}
 	timer.Stop()
 	s.uploads.closeAll()
@@ -352,6 +362,20 @@ func (s *Server) Shutdown(timeout time.Duration) {
 	}
 	s.Log.Info("shutdown")
 	close(s.done)
+}
+
+// encode marshals an answer. An answer larger than maxMessageBytes becomes
+// a refused error, so no message on the transport is over the limit.
+func (s *Server) encode(resp *protocol.Response) ([]byte, error) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) <= s.limits.MaxMessageBytes {
+		return data, nil
+	}
+	return json.Marshal(errorResponse(resp.ID, protocol.NewError(protocol.Refused,
+		"The answer has %d bytes, more than the limit of %d bytes. Ask for a smaller page or a smaller chunk.", len(data), s.limits.MaxMessageBytes)))
 }
 
 func newID() string {

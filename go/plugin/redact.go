@@ -1,7 +1,9 @@
 package plugin
 
 import (
+	"encoding/json"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -14,10 +16,21 @@ type redactor struct {
 
 const secretMark = "[secret]"
 
+// add adds a secret value and its escaped forms: slog's text log and %q
+// write a value with strconv.Quote, and JSON escapes it in its own way.
 func (r *redactor) add(value string) {
 	if value == "" {
 		return
 	}
+	quoted := strconv.Quote(value)
+	r.addOne(quoted[1 : len(quoted)-1])
+	if j, err := json.Marshal(value); err == nil {
+		r.addOne(string(j[1 : len(j)-1]))
+	}
+	r.addOne(value)
+}
+
+func (r *redactor) addOne(value string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, s := range r.secrets {

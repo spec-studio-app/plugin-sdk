@@ -25,6 +25,8 @@ type fakeStore struct {
 	n       int
 	down    bool
 	putWait time.Duration
+	// big makes Get return a value of this many bytes.
+	big     int
 	opened  map[string]string
 	closed  bool
 	openErr error
@@ -41,6 +43,10 @@ func (f *fakeStore) Close(ctx context.Context) error { f.closed = true; return n
 func (f *fakeStore) Get(ctx context.Context, p protocol.StateGetParams) (protocol.StateGetResult, error) {
 	if f.down {
 		return protocol.StateGetResult{}, protocol.NewError(protocol.Unavailable, "The fake storage does not answer. Start it again.")
+	}
+	if f.big > 0 {
+		now := time.Now()
+		return protocol.StateGetResult{Exists: true, Value: json.RawMessage(`"` + strings.Repeat("x", f.big) + `"`), Version: "v", UpdatedAt: &now}, nil
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -311,7 +317,7 @@ func TestStoreDown(t *testing.T) {
 func TestBadName(t *testing.T) {
 	h := start(t, plugin.Plugin{Info: testInfo, Store: newFake()})
 	h.c.Handshake(ctx(t), hello(nil))
-	for _, name := range []string{"../etc", "a/b", "a..b", "", "x\n"} {
+	for _, name := range []string{"../etc", "a/b", "..", ".", "", "x\n"} {
 		if _, err := h.c.Get(ctx(t), "specs", name); !protocol.Is(err, protocol.Refused) {
 			t.Fatalf("key %q: err %v, want refused", name, err)
 		}
@@ -402,10 +408,152 @@ func TestHTTPToken(t *testing.T) {
 	if err != nil || !got.Exists {
 		t.Fatalf("get %+v %v", got, err)
 	}
-	// A second host with other settings is refused.
-	c2 := client.Dial(srv.URL+"/rpc", "tok")
-	if _, err := c2.Handshake(ctx(t), hello(map[string]string{"x": "y"})); !protocol.Is(err, protocol.BadSettings) {
+}
+
+// A later HTTP handshake with other values for declared settings is refused.
+func TestHTTPOtherSettings(t *testing.T) {
+	p := plugin.Plugin{Info: testInfo, Settings: []protocol.Setting{{Name: "label", Description: "A label."}}, Store: newFake()}
+	s := plugin.NewServer(&p, io.Discard)
+	srv := httptest.NewServer(s.Handler("tok", nil))
+	defer srv.Close()
+	if _, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(map[string]string{"label": "a"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(map[string]string{"label": "a"})); err != nil {
+		t.Fatalf("the same settings: %v", err)
+	}
+	_, err := client.Dial(srv.URL+"/rpc", "tok").Handshake(ctx(t), hello(map[string]string{"label": "b"}))
+	if !protocol.Is(err, protocol.BadSettings) || !strings.Contains(err.Error(), "other settings") {
 		t.Fatalf("other settings: %v", err)
+	}
+}
+
+// A browser page cannot reach a loopback plugin (DNS rebinding, simple POSTs).
+func TestHTTPRefusesBrowserRequests(t *testing.T) {
+	p := plugin.Plugin{Info: testInfo, Store: newFake()}
+	s := plugin.NewServer(&p, io.Discard)
+	srv := httptest.NewServer(s.Handler("", nil))
+	defer srv.Close()
+	body := `{"jsonrpc":"2.0","id":1,"method":"plugin.describe"}`
+	cases := []struct {
+		name   string
+		header map[string]string
+		host   string
+		want   int
+	}{
+		{"origin", map[string]string{"Content-Type": "application/json", "Origin": "http://evil.example"}, "", http.StatusForbidden},
+		{"text/plain", map[string]string{"Content-Type": "text/plain"}, "", http.StatusUnsupportedMediaType},
+		{"rebound host", map[string]string{"Content-Type": "application/json"}, "evil.example:7070", http.StatusForbidden},
+		{"loopback", map[string]string{"Content-Type": "application/json"}, "", http.StatusOK},
+		{"localhost", map[string]string{"Content-Type": "application/json"}, "localhost:7070", http.StatusOK},
+	}
+	for _, c := range cases {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/rpc", strings.NewReader(body))
+		for k, v := range c.header {
+			req.Header.Set(k, v)
+		}
+		if c.host != "" {
+			req.Host = c.host
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, resp.StatusCode, c.want)
+		}
+	}
+}
+
+// A secret with a quote or a backslash is redacted in its escaped forms too.
+func TestEscapedSecretIsRedacted(t *testing.T) {
+	const secret = `pa"ss\word`
+	f := newFake()
+	f.openErr = protocol.NewError(protocol.BadSettings, "The key %q is wrong.", secret)
+	h := start(t, plugin.Plugin{Info: testInfo, Settings: settings, Store: f})
+	_, err := h.c.Handshake(ctx(t), hello(map[string]string{"address": "a:1", "api_key": secret}))
+	if err == nil || strings.Contains(err.Error(), `pa\"ss`) || strings.Contains(err.Error(), "word") {
+		t.Fatalf("the error shows the secret: %v", err)
+	}
+	f.openErr = nil
+	if _, err := h.c.Handshake(ctx(t), hello(map[string]string{"address": "a:1", "api_key": secret})); err != nil {
+		t.Fatal(err)
+	}
+	h.c.Shutdown(ctx(t), time.Second)
+	<-h.done
+	if log := h.stderr.String(); strings.Contains(log, "word") {
+		t.Fatalf("the log shows the secret:\n%s", log)
+	}
+}
+
+// An oversized line gets an answer with its own id, so the host call ends.
+func TestOversizedLineKeepsTheID(t *testing.T) {
+	h := start(t, plugin.Plugin{Info: testInfo, Store: newFake(), Limits: protocol.Limits{MaxMessageBytes: 1000}})
+	h.c.Handshake(ctx(t), hello(nil))
+	_, err := h.c.Put(ctx(t), protocol.StatePutParams{Collection: "c", Key: "k", Value: json.RawMessage(`"` + strings.Repeat("x", 2000) + `"`)})
+	var e *protocol.Error
+	if !asErr(err, &e) || e.RPC != protocol.RPCInvalidRequest {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// An answer over the limit becomes a refused error.
+func TestLargeAnswerIsRefused(t *testing.T) {
+	f := newFake()
+	f.big = 2000
+	h := start(t, plugin.Plugin{Info: testInfo, Store: f, Limits: protocol.Limits{MaxMessageBytes: 1000}})
+	h.c.Handshake(ctx(t), hello(nil))
+	_, err := h.c.Get(ctx(t), "c", "k")
+	if !protocol.Is(err, protocol.Refused) || !strings.Contains(err.Error(), "smaller") {
+		t.Fatalf("err %v", err)
+	}
+}
+
+// R9.S2: a stuck call does not stop the shutdown answer or the exit.
+func TestShutdownWithAStuckCall(t *testing.T) {
+	f := newFake()
+	f.putWait = time.Hour
+	h := start(t, plugin.Plugin{Info: testInfo, Store: f})
+	h.c.Handshake(ctx(t), hello(nil))
+	go h.c.Put(context.Background(), protocol.StatePutParams{Collection: "c", Key: "k", Value: json.RawMessage(`1`)})
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	if err := h.c.Shutdown(ctx(t), 500*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-h.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the plugin did not stop")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("the shutdown took %s", d)
+	}
+}
+
+// A signal (ctx) stops a stdio plugin while the host keeps stdin open.
+func TestSignalStopsStdio(t *testing.T) {
+	inR, inW := io.Pipe()
+	defer inW.Close()
+	c, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- plugin.Run(c, plugin.Plugin{Info: testInfo, Store: newFake()}, plugin.Options{Stdin: inR, Stdout: io.Discard, Stderr: io.Discard})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after the signal")
+	}
+}
+
+func TestBadSettingName(t *testing.T) {
+	err := plugin.Run(context.Background(), plugin.Plugin{Info: testInfo, Settings: []protocol.Setting{{Name: "apiKey"}}, Store: newFake()}, plugin.Options{Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "apiKey") {
+		t.Fatalf("err %v", err)
 	}
 }
 

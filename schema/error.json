@@ -36,6 +36,9 @@
             "string",
             "null"
           ]
+        },
+        "reason": {
+          "type": "string"
         }
       }
     }
