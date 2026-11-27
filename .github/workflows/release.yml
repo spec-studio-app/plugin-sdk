@@ -9,12 +9,19 @@ on:
     tags: ["v*.*.*"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  test:
+    name: Tests
+    uses: ./.github/workflows/ci.yml
+
   go-module:
     name: Tag the Go module
+    needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Push go/${{ github.ref_name }}
@@ -24,6 +31,7 @@ jobs:
 
   binaries:
     name: plugin-conformance ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -34,6 +42,8 @@ jobs:
           - { goos: linux, goarch: amd64 }
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version: "1.24.x"
@@ -58,6 +68,8 @@ jobs:
     name: GitHub release
     needs: [binaries, go-module]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -73,17 +85,21 @@ jobs:
 
   npm:
     name: npm package
+    needs: test
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ts
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
-      - run: npm ci
+      # No install scripts: the job holds the npm token.
+      - run: npm ci --ignore-scripts
       - run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
       - run: npm run build
       - name: Publish
