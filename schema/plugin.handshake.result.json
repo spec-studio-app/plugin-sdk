@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/plugin.handshake.result.json",
+  "title": "plugin.handshake result",
+  "type": "object",
+  "required": [
+    "plugin",
+    "protocolVersion",
+    "capabilities",
+    "testHooks",
+    "durable",
+    "limits"
+  ],
+  "properties": {
+    "plugin": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "repo"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "protocolVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "state",
+          "events",
+          "blobs",
+          "watch"
+        ]
+      },
+      "uniqueItems": true,
+      "contains": {
+        "const": "state"
+      }
+    },
+    "testHooks": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "continueStream"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "durable": {
+      "type": "boolean"
+    },
+    "limits": {
+      "type": "object",
+      "required": [
+        "maxMessageBytes",
+        "maxChunkBytes",
+        "maxPageSize",
+        "maxWaitMs"
+      ],
+      "properties": {
+        "maxMessageBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxChunkBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPageSize": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxWaitMs": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "session": {
+      "type": "string"
+    }
+  }
+}

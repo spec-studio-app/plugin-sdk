@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/plugin.describe.result.json",
+  "title": "plugin.describe result",
+  "type": "object",
+  "required": [
+    "plugin",
+    "protocolVersions",
+    "capabilities",
+    "settings",
+    "testHooks",
+    "durable"
+  ],
+  "properties": {
+    "plugin": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "repo"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "repo": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "protocolVersions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+$"
+      },
+      "minItems": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "state",
+          "events",
+          "blobs",
+          "watch"
+        ]
+      },
+      "uniqueItems": true,
+      "contains": {
+        "const": "state"
+      }
+    },
+    "settings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "description",
+          "required",
+          "secret"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "secret": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "testHooks": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "continueStream"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "durable": {
+      "type": "boolean"
+    }
+  }
+}

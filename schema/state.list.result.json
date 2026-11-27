@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/state.list.result.json",
+  "title": "state.list result",
+  "type": "object",
+  "required": [
+    "items",
+    "cursor"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "attributes",
+          "version",
+          "updatedAt"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$",
+            "not": {
+              "pattern": "\\.\\."
+            }
+          },
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "number",
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "value": {}
+        }
+      }
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

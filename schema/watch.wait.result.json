@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/watch.wait.result.json",
+  "title": "watch.wait result",
+  "type": "object",
+  "required": [
+    "changed"
+  ],
+  "properties": {
+    "changed": {
+      "type": "boolean"
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

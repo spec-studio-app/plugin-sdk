@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/watch.wait.request.json",
+  "title": "watch.wait params",
+  "type": "object",
+  "required": [
+    "timeoutMs"
+  ],
+  "properties": {
+    "collection": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$",
+      "not": {
+        "pattern": "\\.\\."
+      }
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$",
+      "not": {
+        "pattern": "\\.\\."
+      }
+    },
+    "version": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stream": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$",
+      "not": {
+        "pattern": "\\.\\."
+      }
+    },
+    "after": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "oneOf": [
+    {
+      "required": [
+        "collection",
+        "key",
+        "version"
+      ]
+    },
+    {
+      "required": [
+        "stream",
+        "after"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/plugin.shutdown.request.json",
+  "title": "plugin.shutdown params",
+  "type": "object",
+  "required": [],
+  "properties": {
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 600000
+    }
+  }
+}

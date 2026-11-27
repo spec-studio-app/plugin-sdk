@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/state.list.request.json",
+  "title": "state.list params",
+  "type": "object",
+  "required": [
+    "collection"
+  ],
+  "properties": {
+    "collection": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$",
+      "not": {
+        "pattern": "\\.\\."
+      }
+    },
+    "filter": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "pageSize": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "withValues": {
+      "type": "boolean"
+    }
+  }
+}

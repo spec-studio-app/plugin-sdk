@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/test.continueStream.result.json",
+  "title": "test.continueStream result",
+  "type": "object",
+  "required": [
+    "run"
+  ],
+  "properties": {
+    "run": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

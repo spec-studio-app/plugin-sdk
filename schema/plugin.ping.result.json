@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/plugin.ping.result.json",
+  "title": "plugin.ping result",
+  "type": "object",
+  "required": [
+    "status",
+    "time"
+  ],
+  "properties": {
+    "status": {
+      "const": "ok"
+    },
+    "time": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
