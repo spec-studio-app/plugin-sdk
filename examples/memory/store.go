@@ -106,6 +106,17 @@ func (m *memoryStore) Open(ctx context.Context, o plugin.OpenOptions) error {
 		return protocol.NewError(protocol.Unavailable, "Another process uses the data file %s. Stop it first.", path)
 	}
 	m.lock = lock
+	if err := m.load(path); err != nil {
+		// Let a later handshake of this process take the lock again.
+		m.lock.Close()
+		m.lock = nil
+		return err
+	}
+	return nil
+}
+
+// load reads the data file.
+func (m *memoryStore) load(path string) error {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return nil

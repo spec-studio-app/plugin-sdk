@@ -73,6 +73,21 @@ func TestReadAcrossRuns(t *testing.T) {
 	}
 }
 
+// A failed open lets the next open of the same process take the lock again.
+func TestFailedOpenReleasesTheLock(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "data.json")
+	os.WriteFile(file, []byte("not json"), 0o600)
+	m := newMemoryStore(&file)
+	o := plugin.OpenOptions{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	if err := m.Open(context.Background(), o); !protocol.Is(err, protocol.BadSettings) {
+		t.Fatalf("open of a bad file: %v", err)
+	}
+	os.WriteFile(file, []byte("{}"), 0o600)
+	if err := m.Open(context.Background(), o); err != nil {
+		t.Fatalf("the second open: %v", err)
+	}
+}
+
 // A failed write of the data file keeps no change.
 func TestFailedWriteKeepsNoChange(t *testing.T) {
 	ctx := context.Background()
