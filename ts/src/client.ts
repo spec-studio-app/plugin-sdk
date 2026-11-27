@@ -345,6 +345,19 @@ export class PluginClient {
     }
   }
 
+  /** One new HTTP handshake, shared by every call that lost the session. */
+  private rehandshaking: Promise<void> | null = null;
+
+  private rehandshake(): Promise<void> {
+    if (!this.rehandshaking) {
+      if (this.t instanceof HttpTransport) this.t.session = null;
+      this.rehandshaking = this.handshake().finally(() => {
+        this.rehandshaking = null;
+      });
+    }
+    return this.rehandshaking;
+  }
+
   private async handshake(): Promise<void> {
     const r = (await this.t.call("plugin.handshake", this.hello)) as HandshakeResult;
     if (this.t instanceof HttpTransport) this.t.session = r.session ?? null;
@@ -381,7 +394,7 @@ export class PluginClient {
     } catch (err) {
       if (!(this.t instanceof HttpTransport) || !(err instanceof PluginError) || err.reason !== "handshake_required") throw err;
       this.log({ event: "plugin_session_lost", method });
-      await this.handshake();
+      await this.rehandshake();
       return (await this.t.call(method, params ?? {}, signal)) as T;
     }
   }

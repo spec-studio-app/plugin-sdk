@@ -326,6 +326,10 @@ describe("http", () => {
       p.kill();
       await new Promise((r) => p.once("exit", r));
       p = await start();
+      // Calls at the same time share one new handshake.
+      const results = await Promise.all([c.ping(), c.ping(), c.state.get({ collection: "c", key: "k" })]);
+      assert.equal(results[0].status, "ok");
+      assert.equal(logs.filter((l) => l.event === "plugin_handshake").length, 2);
       assert.equal((await c.ping()).status, "ok");
       assert.notEqual(c.info.session, first);
       assert.ok(logs.some((l) => l.event === "plugin_session_lost"));
