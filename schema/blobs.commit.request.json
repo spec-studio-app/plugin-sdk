@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.commit.request.json",
+  "title": "blobs.commit params",
+  "type": "object",
+  "required": [
+    "uploadId"
+  ],
+  "properties": {
+    "uploadId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

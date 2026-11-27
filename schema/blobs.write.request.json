@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.write.request.json",
+  "title": "blobs.write params",
+  "type": "object",
+  "required": [
+    "uploadId",
+    "offset",
+    "data"
+  ],
+  "properties": {
+    "uploadId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "data": {
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  }
+}

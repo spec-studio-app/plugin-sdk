@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/events.read.result.json",
+  "title": "events.read result",
+  "type": "object",
+  "required": [
+    "events",
+    "cursor",
+    "more"
+  ],
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "cursor",
+          "type",
+          "at",
+          "data"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {}
+        }
+      }
+    },
+    "cursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "more": {
+      "type": "boolean"
+    }
+  }
+}

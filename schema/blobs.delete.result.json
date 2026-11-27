@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.delete.result.json",
+  "title": "blobs.delete result",
+  "type": "object",
+  "required": [
+    "deleted"
+  ],
+  "properties": {
+    "deleted": {
+      "type": "boolean"
+    }
+  }
+}

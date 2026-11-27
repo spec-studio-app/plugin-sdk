@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/state.delete.result.json",
+  "title": "state.delete result",
+  "type": "object",
+  "required": [
+    "deleted"
+  ],
+  "properties": {
+    "deleted": {
+      "const": true
+    }
+  }
+}

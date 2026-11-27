@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.get.result.json",
+  "title": "blobs.get result",
+  "type": "object",
+  "required": [
+    "data",
+    "offset",
+    "size"
+  ],
+  "properties": {
+    "data": {
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

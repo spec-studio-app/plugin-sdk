@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.has.request.json",
+  "title": "blobs.has params",
+  "type": "object",
+  "required": [
+    "sha256s"
+  ],
+  "properties": {
+    "sha256s": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "maxItems": 1000
+    }
+  }
+}

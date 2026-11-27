@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/plugin.describe.request.json",
+  "title": "plugin.describe params",
+  "type": [
+    "object",
+    "null"
+  ]
+}

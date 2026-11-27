@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.begin.result.json",
+  "title": "blobs.begin result",
+  "type": "object",
+  "required": [
+    "exists"
+  ],
+  "properties": {
+    "exists": {
+      "type": "boolean"
+    },
+    "uploadId": {
+      "type": "string"
+    }
+  }
+}

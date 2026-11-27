@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/blobs.write.result.json",
+  "title": "blobs.write result",
+  "type": "object",
+  "required": [
+    "received"
+  ],
+  "properties": {
+    "received": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

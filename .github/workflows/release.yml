@@ -1,0 +1,113 @@
+name: Release
+
+# A tag vX.Y.Z publishes:
+# - the Go module version (the tag go/vX.Y.Z, for the module in go/),
+# - the npm package @spec-studio-app/plugin-sdk at X.Y.Z (needs the NPM_TOKEN secret),
+# - the plugin-conformance binaries for macOS and Linux, on the GitHub release.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests
+    uses: ./.github/workflows/ci.yml
+
+  go-module:
+    name: Tag the Go module
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push go/${{ github.ref_name }}
+        run: |
+          git tag "go/${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+          git push origin "go/${GITHUB_REF_NAME}"
+
+  binaries:
+    name: plugin-conformance ${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: "**/go.sum"
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          name="plugin-conformance-${GITHUB_REF_NAME}-${GOOS}-${GOARCH}"
+          mkdir -p "dist/$name"
+          (cd conformance && go build -trimpath -ldflags "-s -w -X main.version=${GITHUB_REF_NAME#v}" -o "../dist/$name/plugin-conformance" ./cmd/plugin-conformance)
+          cp -R schema "dist/$name/schema"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: conformance-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+
+  github-release:
+    name: GitHub release
+    needs: [binaries, go-module]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Make the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz dist/SHA256SUMS \
+            --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --generate-notes
+
+  npm:
+    name: npm package
+    needs: test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      # No install scripts: the job holds the npm token.
+      - run: npm ci --ignore-scripts
+      - run: npm version --no-git-tag-version "${GITHUB_REF_NAME#v}"
+      - run: npm run build
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN is not set: the npm package was not published."
+            exit 0
+          fi
+          npm publish --access public

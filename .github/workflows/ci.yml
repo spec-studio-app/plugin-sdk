@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: "**/go.sum"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: The schemas match scripts/schemas.mjs
+        run: node scripts/schemas.mjs && git diff --exit-code schema
+      - name: Vet
+        run: |
+          for m in go examples/memory conformance; do (cd "$m" && go vet ./...); done
+      - name: Test
+        run: |
+          for m in go examples/memory conformance; do (cd "$m" && go test -race ./...); done
+
+  ts:
+    name: TypeScript build and tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: "**/go.sum"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ts/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  conformance:
+    name: Conformance of the memory plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache-dependency-path: "**/go.sum"
+      - name: Build
+        run: |
+          mkdir -p bin
+          (cd examples/memory && go build -o ../../bin/memory .)
+          (cd conformance && go build -o ../bin/plugin-conformance ./cmd/plugin-conformance)
+      - name: Over stdio
+        run: bin/plugin-conformance --schemas schema -- bin/memory --data "$RUNNER_TEMP/memory.json"
+      - name: Over HTTP
+        run: |
+          bin/memory --listen 127.0.0.1:7070 --token ci-token &
+          for i in $(seq 1 50); do curl -s -o /dev/null http://127.0.0.1:7070/rpc && break; sleep 0.1; done
+          bin/plugin-conformance --schemas schema --url http://127.0.0.1:7070/rpc --token ci-token
+          wait

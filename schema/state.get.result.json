@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/state.get.result.json",
+  "title": "state.get result",
+  "type": "object",
+  "required": [
+    "exists"
+  ],
+  "properties": {
+    "exists": {
+      "type": "boolean"
+    },
+    "value": {},
+    "attributes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": [
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      }
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "if": {
+    "properties": {
+      "exists": {
+        "const": true
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "value",
+      "attributes",
+      "version",
+      "updatedAt"
+    ]
+  }
+}

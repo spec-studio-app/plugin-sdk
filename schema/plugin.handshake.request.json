@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://spec-studio-app.github.io/plugin-sdk/schema/plugin.handshake.request.json",
+  "title": "plugin.handshake params",
+  "type": "object",
+  "required": [
+    "host",
+    "protocolVersions",
+    "settings"
+  ],
+  "properties": {
+    "host": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "app",
+            "relay",
+            "test"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "protocolVersions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+$"
+      },
+      "minItems": 1
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  }
+}
