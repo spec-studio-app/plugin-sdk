@@ -113,13 +113,17 @@ class StdioTransport implements Transport {
       this.child = child;
       this.stderrTail = [];
       let started = false;
+      // The transport is ready for the host's calls only after the handshake (markReady).
+      this.ready = false;
       child.once("spawn", () => {
         started = true;
-        this.ready = true;
         resolve();
       });
       child.once("error", (err) => {
-        if (!started) reject(new PluginError("unavailable", `The plugin ${this.o.command} did not start: ${err.message}`));
+        if (started) return;
+        // A spawn failure emits no exit event: forget the child, so a restart tries again.
+        if (this.child === child) this.child = null;
+        reject(new PluginError("unavailable", `The plugin ${this.o.command} did not start: ${err.message}`));
       });
       createInterface({ input: child.stdout }).on("line", (line) => this.onLine(line));
       createInterface({ input: child.stderr }).on("line", (line) => {
@@ -190,9 +194,16 @@ class StdioTransport implements Transport {
     }
   }
 
+  /** The handshake ended: the host's calls can go to the plugin. */
+  markReady(): void {
+    if (this.child) this.ready = true;
+  }
+
   call(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     const child = this.child;
-    if (!child || !this.ready) {
+    // Before the handshake ends, only the handshake and describe go to the plugin.
+    const early = method === "plugin.handshake" || method === "plugin.describe";
+    if (!child || (!this.ready && !early)) {
       return Promise.reject(new PluginError("unavailable", "The plugin does not run now. It restarts; try again later."));
     }
     const id = this.nextId++;
@@ -337,6 +348,7 @@ export class PluginClient {
   private async handshake(): Promise<void> {
     const r = (await this.t.call("plugin.handshake", this.hello)) as HandshakeResult;
     if (this.t instanceof HttpTransport) this.t.session = r.session ?? null;
+    if (this.t instanceof StdioTransport) this.t.markReady();
     this.info = r;
     this.log({
       event: "plugin_handshake",
@@ -358,9 +370,20 @@ export class PluginClient {
     return this.info.capabilities.includes(c);
   }
 
-  /** Make any call. Prefer the typed calls. */
-  call<T>(method: string, params?: unknown, signal?: AbortSignal): Promise<T> {
-    return this.t.call(method, params ?? {}, signal) as Promise<T>;
+  /**
+   * Make any call. Prefer the typed calls. Over HTTP, when the plugin lost
+   * the session (it restarted), the client sends the handshake again and
+   * retries the call once.
+   */
+  async call<T>(method: string, params?: unknown, signal?: AbortSignal): Promise<T> {
+    try {
+      return (await this.t.call(method, params ?? {}, signal)) as T;
+    } catch (err) {
+      if (!(this.t instanceof HttpTransport) || !(err instanceof PluginError) || err.reason !== "handshake_required") throw err;
+      this.log({ event: "plugin_session_lost", method });
+      await this.handshake();
+      return (await this.t.call(method, params ?? {}, signal)) as T;
+    }
   }
 
   describe(): Promise<DescribeResult> {

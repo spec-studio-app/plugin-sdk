@@ -3,7 +3,8 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -65,6 +66,19 @@ async function waitFor(check: () => boolean, ms = 10_000): Promise<void> {
   while (!check()) {
     if (Date.now() > end) throw new Error("timed out");
     await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+async function waitHttp(url: string): Promise<void> {
+  const end = Date.now() + 10_000;
+  for (;;) {
+    try {
+      await fetch(url, { method: "POST", body: "{}" });
+      return;
+    } catch {
+      if (Date.now() > end) throw new Error("the HTTP plugin did not start");
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
 }
 
@@ -178,6 +192,36 @@ describe("stdio", () => {
   test("a call before the handshake is refused, and describe works (R1.S3)", async () => {
     const d = await PluginClient.describeStdio({ command: bin });
     assert.deepEqual(d.capabilities, ["state", "events", "blobs", "watch"]);
+    // A raw call before the handshake.
+    const child = spawn(bin, [], { stdio: ["pipe", "pipe", "ignore"] });
+    const line = await new Promise<string>((resolve) => {
+      createInterface({ input: child.stdout! }).once("line", resolve);
+      child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "state.get", params: { collection: "c", key: "k" } }) + "\n");
+    });
+    child.kill();
+    const msg = JSON.parse(line);
+    assert.equal(msg.id, 1);
+    assert.equal(msg.error.data.code, "refused");
+    assert.equal(msg.error.data.reason, "handshake_required");
+  });
+
+  test("a restart that cannot start the plugin tries again (R9.S3)", async () => {
+    const copy = join(tmp, "memory-copy");
+    copyFileSync(bin, copy);
+    chmodSync(copy, 0o755);
+    const logs: Array<Record<string, unknown>> = [];
+    const c = await PluginClient.startStdio({ command: copy, host, log: (e) => logs.push(e), restart: { minMs: 50, maxMs: 200 } });
+    try {
+      rmSync(copy);
+      process.kill(c.pid!, "SIGKILL");
+      await waitFor(() => logs.filter((l) => l.event === "plugin_restart_failed").length >= 2);
+      copyFileSync(bin, copy);
+      chmodSync(copy, 0o755);
+      await waitFor(() => logs.some((l) => l.event === "plugin_restarted"));
+      assert.equal((await c.ping()).status, "ok");
+    } finally {
+      await c.shutdown();
+    }
   });
 
   test("no shared major version (R1.S2)", async () => {
@@ -254,16 +298,7 @@ describe("http", () => {
     const port = await freePort();
     child = spawn(bin, ["--listen", `127.0.0.1:${port}`, "--token", "tok"], { stdio: "ignore" });
     url = `http://127.0.0.1:${port}/rpc`;
-    const end = Date.now() + 10_000;
-    for (;;) {
-      try {
-        await fetch(url, { method: "POST", body: "{}" });
-        break;
-      } catch {
-        if (Date.now() > end) throw new Error("the HTTP plugin did not start");
-        await new Promise((r) => setTimeout(r, 50));
-      }
-    }
+    await waitHttp(url);
   });
   after(() => {
     child.kill();
@@ -274,6 +309,29 @@ describe("http", () => {
     assert.ok(c.info.session);
     await everyCall(c, "http");
     await typedConflict(c, "http");
+  });
+
+  test("after a restart of the HTTP plugin, the client does the handshake again", async () => {
+    const port = await freePort();
+    const start = async () => {
+      const p = spawn(bin, ["--listen", `127.0.0.1:${port}`], { stdio: "ignore" });
+      await waitHttp(`http://127.0.0.1:${port}/rpc`);
+      return p;
+    };
+    let p = await start();
+    const logs: Array<Record<string, unknown>> = [];
+    try {
+      const c = await PluginClient.connectHttp({ url: `http://127.0.0.1:${port}/rpc`, host, log: (e) => logs.push(e) });
+      const first = c.info.session;
+      p.kill();
+      await new Promise((r) => p.once("exit", r));
+      p = await start();
+      assert.equal((await c.ping()).status, "ok");
+      assert.notEqual(c.info.session, first);
+      assert.ok(logs.some((l) => l.event === "plugin_session_lost"));
+    } finally {
+      p.kill();
+    }
   });
 
   test("a wrong token is refused (R8.S3)", async () => {

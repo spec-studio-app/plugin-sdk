@@ -26,7 +26,7 @@ export const RPC = {
 export interface RpcErrorObject {
   code: number;
   message: string;
-  data?: { code?: string; version?: string | null };
+  data?: { code?: string; version?: string | null; reason?: string };
 }
 
 /** An error from the plugin, or from the client for a plugin that does not answer. */
@@ -37,19 +37,22 @@ export class PluginError extends Error {
   readonly rpcCode: number;
   /** For a conflict: the stored version (null when no document exists). */
   readonly storedVersion: string | null | undefined;
+  /** More detail for some errors, for example "handshake_required". */
+  readonly reason: string | undefined;
 
-  constructor(code: ErrorCode | null, message: string, rpcCode?: number, storedVersion?: string | null) {
+  constructor(code: ErrorCode | null, message: string, rpcCode?: number, storedVersion?: string | null, reason?: string) {
     super(message);
     this.name = "PluginError";
     this.code = code;
     this.rpcCode = rpcCode ?? (code ? RPC_CODES[code] : RPC.internal);
     this.storedVersion = storedVersion;
+    this.reason = reason;
   }
 
   static fromRpc(e: RpcErrorObject): PluginError {
     const word = e.data?.code;
     const code = ERROR_CODES.includes(word as ErrorCode) ? (word as ErrorCode) : null;
-    return new PluginError(code, e.message, e.code, e.data && "version" in e.data ? e.data.version : undefined);
+    return new PluginError(code, e.message, e.code, e.data && "version" in e.data ? e.data.version : undefined, e.data?.reason);
   }
 }
 
