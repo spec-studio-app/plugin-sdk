@@ -1,8 +1,8 @@
 # The Spec Studio backend plugin protocol
 
-Protocol version: **1.0**
+Protocol version: **1.1**
 
-This document defines the protocol between a Spec Studio host and a backend plugin. A host is the Spec Studio relay or the Spec Studio app. A plugin keeps the host's data: documents, event logs and files. The JSON Schema of each message is in [`schema/`](schema/).
+This document defines the protocol between a Spec Studio host and a backend plugin. A host is the Spec Studio relay, the Spec Studio app or the `studio` CLI. A plugin keeps the host's data: documents, event logs and files. The JSON Schema of each message is in [`schema/`](schema/).
 
 ## Contents
 
@@ -26,7 +26,7 @@ This document defines the protocol between a Spec Studio host and a backend plug
 
 | Word | Meaning |
 |---|---|
-| Host | The program that starts or calls the plugin: the relay (`relay`), the app (`app`), or a test tool (`test`). |
+| Host | The program that starts or calls the plugin: the relay (`relay`), the app (`app`), the `studio` CLI (`cli`), or a test tool (`test`). |
 | Plugin | The program that keeps the data. It answers the host's calls. |
 | Capability | A set of methods. A plugin gives `state` always, and `events`, `blobs` and `watch` when it can. |
 | Document | One JSON value in a collection, with a key, a version and attributes. |
@@ -160,6 +160,25 @@ The protocol version has the form `major.minor`.
 - In the handshake, the host sends all the versions it speaks. The plugin finds the highest major version that both speak. It chooses the lower of the two minor versions in that major version. Example: the host speaks `1.3` and the plugin speaks `1.0`: the plugin chooses `1.0`, and the host uses only the methods of `1.0`.
 - When no major version is shared, the handshake fails with `refused`. The message names the host's versions and the plugin's versions.
 
+### Protocol 1.1
+
+Protocol 1.1 adds two things to 1.0:
+
+- The method [`state.commit`](#statecommit-protocol-11): a document and its events in one atomic step.
+- The optional field `storeId` in the handshake result (see [`plugin.handshake`](#pluginhandshake)).
+
+A plugin lists `1.1` in `protocolVersions` only when it implements `state.commit`. The Go SDK does this: a store that implements `plugin.Committer` and `plugin.EventStore` lists `1.0` and `1.1`; any other store lists `1.0` only.
+
+The negotiation does not change:
+
+| Host speaks | Plugin speaks | The handshake chooses |
+|---|---|---|
+| `1.0`, `1.1` | `1.0`, `1.1` | `1.1` |
+| `1.0`, `1.1` | `1.0` | `1.0` |
+| `1.0` | `1.0`, `1.1` | `1.0` (no `storeId`, and the host does not call `state.commit`) |
+
+A host that needs `state.commit`, as the app does, sends `1.1` and refuses a plugin that chose `1.0`. It writes nothing to that plugin, and tells the owner that the plugin is too old and that it needs protocol 1.1.
+
 ## 6. The handshake and the settings
 
 ### `plugin.describe`
@@ -190,6 +209,8 @@ The first call on a connection, after any `plugin.describe` calls. Every other c
 
 Params:
 
+`host.kind` is `app`, `relay`, `cli` or `test`.
+
 ```json
 {
   "host": { "kind": "relay", "version": "0.6.0" },
@@ -208,11 +229,19 @@ Result:
   "testHooks": [],
   "durable": false,
   "limits": { "maxMessageBytes": 2097152, "maxChunkBytes": 1048576, "maxPageSize": 1000, "maxWaitMs": 60000 },
-  "session": "…"
+  "session": "…",
+  "storeId": "json:/Users/me/Library/Application Support/Spec Studio/backend/json"
 }
 ```
 
 `session` is in the result over HTTP only.
+
+`storeId` (protocol 1.1, optional) names the data that the plugin reads and writes. Two plugin processes that read and write the same data give the same `storeId`. Two processes on different data give different values. A host compares two `storeId` values to know that two plugins share one store, for example the app and the relay on the same Temporal deploy. A plugin gives `storeId` only when the handshake chose 1.1 or later. In the Go SDK, a store gives it with `plugin.StoreIdentity`. The official plugins give:
+
+| Plugin | `storeId` |
+|---|---|
+| plugin-json | `json:<absolute data folder>` |
+| plugin-temporal | `temporal:<address>/<namespace>/<deploy ID>` |
 
 The host shows the plugin's name, version and repo link: the app in Settings, the relay in its log at start.
 
@@ -326,7 +355,7 @@ Result: `{ "version": "…", "updatedAt": "…", "cursors": ["…"] }`, with one
 
 ## 9. The events capability
 
-A stream is an ordered log of events. The relay writes one stream for each spec and each desk; the app writes the activity lines of each spec.
+A stream is an ordered log of events. The relay writes one stream for each spec and each desk. The app writes the activity of each spec with `state.commit`, together with the spec's state.
 
 ### `events.append`
 
@@ -410,7 +439,7 @@ Params: `{ "stream" }`. The plugin starts a new part of the stream, as it does w
 
 1. **Keep every event.** A plugin that gives `events` keeps every event of a stream until the host calls `events.delete` for that stream. It does not lose events when the storage ends a part of a stream. For Temporal: export the history of each closed run to blobs (or other durable storage) before the namespace's retention removes it, and read from that export when a read reaches an old run.
 2. **Never log a secret.** Not in the log, not in an error message, not in a result.
-3. **Make each compare and swap atomic.** Two writes with the same expected version: exactly one succeeds. This applies across processes too: a host can start a second plugin process on the same storage (for example `relay pair-code` while the relay runs). A plugin whose storage cannot do an atomic compare and swap across processes must refuse to open storage that another process holds, with `unavailable`. The memory example locks its data file for this reason.
+3. **Make each compare and swap atomic.** Two writes with the same expected version: exactly one succeeds. For `state.commit`, the check, the document and the events are one step: a failed check writes no document and no event, also after a crash. This applies across processes too: a host can start a second plugin process on the same storage (for example `relay pair-code` while the relay runs). A plugin whose storage cannot do an atomic compare and swap across processes must refuse to open storage that another process holds, with `unavailable`. The memory example locks its data file for this reason.
 4. **Never reuse a version or a cursor** for the same document or stream.
 5. **Write only protocol messages to stdout.** Log to stderr.
 6. **Check names.** Refuse a name that is not valid (see [Parts and words](#1-parts-and-words)). Never make a path from a name without this check.
@@ -489,11 +518,55 @@ All methods use the one document `relay` / `config`. A method that only reads do
 
 ## 15. How the app uses the protocol
 
-The app keeps its local files as the working state. The `studio` CLI reads them, also offline. The app writes through to the plugin, and keeps a queue while the Mac is offline.
+**The plugin holds the app's state. The app and the `studio` CLI read and write it only through the plugin.**
+
+- The app keeps no local working copy of the state and no queue of writes. The app keeps a view of the state in memory only, and `watch.wait` keeps that view current.
+- A write that the plugin does not take fails. The app shows the error, and the CLI prints it and exits with code 3. Nothing goes to a file or a queue for later.
+- The app and the CLI need protocol 1.1. They refuse a plugin that chose 1.0 (see [Protocol 1.1](#protocol-11)).
+- The documents of a spec (`spec.md`, `plan.md` and the other files of the spec folder) stay in git. They are not in the plugin.
+
+### The app and the CLI
+
+The app starts the plugin as a child process over stdio, with the host kind `app`.
+
+The `studio` CLI starts **its own plugin process** for each command, with the host kind `cli`, so it works when the app is closed. It reads the same backend setting as the app, finds the same plugin binary, does `plugin.handshake`, makes its calls and sends `plugin.shutdown`. The two processes read and write the same data:
+
+- plugin-json takes a file lock for each collection, so the app's process and the CLI's process can write at the same time. Its `watch.wait` sees a write of another process, so the app sees the CLI's change.
+- plugin-temporal is a Temporal client, so two processes are normal.
+
+Both processes give the same `storeId`.
+
+### Names
 
 | Data | Where |
 |---|---|
-| The spec's `state.json` | Document `app-specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `stage`, `status`. |
-| Each line of `activity.jsonl` | Stream `spec:<repoKey>:<slug>`, with `at` set to the line's time. |
+| A spec's state | Document `app-specs` / `<repoKey>:<slug>`. Attributes: `repoKey`, `stage`, `status`, `repo` (the path of the home repo). |
+| A spec's activity | Stream `spec:<repoKey>:<slug>`. Each activity line is one event with `type: "activity"`, `data` set to the line's JSON object, and `at` set to the line's time. Only `state.commit` writes these events, together with the spec's state. The relay's own events in the same stream keep their own types. |
+| A review round | Document `app-rounds` / `<repoKey>:<slug>:<n>`. |
+| A desk's state (the outbox and what was delivered) | Document `app-desks` / `<repoKey>`. |
+| A spec's inbox of messages from Claude AI | Document `app-inbox` / `<repoKey>:<slug>`. |
+| The areas | Document `app-areas` / `<id>`. |
+| The projects | Document `app-projects` / `<id>`. |
+| The marks of the one-time import of the old files | Attribute `importedLine` on the spec's `app-specs` document: the last line of the old `activity.jsonl` that the plugin has. |
 | A snapshot of a spec document, a recording of a terminal, an attachment | A blob. The event that names it holds its SHA-256. |
-| The scrubber | `events.read` with `from` and `to`, and `blobs.get` for each snapshot. |
+
+`repoKey` is the key that the relay uses for the repo, so the app and the relay name a spec the same way.
+
+### A change to a spec
+
+Each change to a spec is a "read, apply, commit":
+
+1. `state.get` on `app-specs` / `<repoKey>:<slug>`.
+2. Apply the change in the app's rules.
+3. `state.commit` with the new state, the read version as `expectedVersion` (`null` for a new spec), the stream `spec:<repoKey>:<slug>`, and the new activity events.
+4. On `conflict`, do it again, at most 5 times, as the relay does (see [section 14](#14-how-the-relay-uses-the-protocol)). Then the change fails.
+
+So the state and its activity never disagree: the plugin has both, or neither.
+
+### Reads
+
+| What the app needs | Protocol calls |
+|---|---|
+| The list of specs of a repo | `state.list` on `app-specs` with `withValues: true` and the filter `repo`. |
+| A change to a spec | `watch.wait` on the spec's document with its version. |
+| The scrubber and the history | `events.read` on the spec's stream with `from` and `to`, and `blobs.get` for each snapshot. |
