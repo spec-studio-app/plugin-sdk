@@ -124,6 +124,22 @@ func TestStateOnlyPlugin(t *testing.T) {
 	}
 }
 
+// A plugin with watch and no events passes: the wait on a stream needs events.
+func TestWatchWithNoEvents(t *testing.T) {
+	report, out := run(t, conformance.Target{Command: []string{filepath.Join(bin, "fixture"), "--watch"}})
+	if report.Failed() {
+		t.Fatalf("the watch fixture failed:\n%s", out)
+	}
+	if s := status(report, "watch-stream"); s != conformance.Skip {
+		t.Fatalf("watch-stream: %s, want skip\n%s", s, out)
+	}
+	for _, name := range []string{"watch-change", "watch-timeout", "watch-already-newer"} {
+		if s := status(report, name); s != conformance.Pass {
+			t.Errorf("%s: %s, want pass", name, s)
+		}
+	}
+}
+
 // R12.S4
 func TestContinuedRunNeedsTheHook(t *testing.T) {
 	report, out := run(t, conformance.Target{Command: []string{filepath.Join(bin, "fixture"), "--events"}})

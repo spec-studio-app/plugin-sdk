@@ -923,6 +923,11 @@ func testWatchNewer(e *env) error {
 }
 
 func testWatchStream(e *env) error {
+	// A wait on a stream needs events to append; a plugin with watch and no
+	// events gets refused on the append, which is correct, so skip.
+	if !e.info.Has(protocol.CapEvents) {
+		return skip("the plugin does not declare events")
+	}
 	s := e.name("wstream")
 	r, err := e.c.Append(e.ctx, s, ev("A", 1))
 	if err != nil {
