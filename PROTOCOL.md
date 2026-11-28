@@ -564,7 +564,7 @@ Each change to a spec is a "read, apply, commit":
 1. `state.get` on `app-specs` / `<repoKey>:<slug>`.
 2. Apply the change in the app's rules.
 3. `state.commit` with the new state, the read version as `expectedVersion` (`null` for a new spec), the stream `spec:<repoKey>:<slug>`, and the new activity events.
-4. On `conflict`, do it again, at most 5 times, as the relay does (see [section 14](#14-how-the-relay-uses-the-protocol)). Then the change fails.
+4. On `conflict`, do it again, with a short random wait that doubles, for at most 24 tries or 2.5 s. Then the change fails with a "busy" error (the CLI exits 4). The relay keeps its own limit of 5 tries (see [section 14](#14-how-the-relay-uses-the-protocol)).
 
 So the state and its activity never disagree: the plugin has both, or neither.
 
