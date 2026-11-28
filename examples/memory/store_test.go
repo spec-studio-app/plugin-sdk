@@ -115,3 +115,46 @@ func TestFailedWriteKeepsNoChange(t *testing.T) {
 		t.Fatalf("the failed write changed the document: %+v", got)
 	}
 }
+
+// R2.S1, R2.S2: state.commit writes the document and the events together, a
+// conflict writes neither, and both stay after a restart.
+func TestCommitWritesBothOrNeither(t *testing.T) {
+	ctx := context.Background()
+	file := filepath.Join(t.TempDir(), "data.json")
+	m := opened(t, file)
+	first, err := m.Commit(ctx, protocol.StateCommitParams{Collection: "app-specs", Key: "r:s", Value: json.RawMessage(`1`), Stream: "spec:r:s", Events: []protocol.NewEvent{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Cursors) != 0 {
+		t.Fatalf("a commit with no events gave cursors %v", first.Cursors)
+	}
+	second, err := m.Commit(ctx, protocol.StateCommitParams{
+		Collection: "app-specs", Key: "r:s", Value: json.RawMessage(`2`), ExpectedVersion: &first.Version, Stream: "spec:r:s",
+		Events: []protocol.NewEvent{{Type: "activity", Data: json.RawMessage(`"a"`)}, {Type: "activity", Data: json.RawMessage(`"b"`)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Cursors) != 2 {
+		t.Fatalf("cursors %v, want 2", second.Cursors)
+	}
+	_, err = m.Commit(ctx, protocol.StateCommitParams{
+		Collection: "app-specs", Key: "r:s", Value: json.RawMessage(`3`), ExpectedVersion: &first.Version, Stream: "spec:r:s",
+		Events: []protocol.NewEvent{{Type: "activity", Data: json.RawMessage(`"c"`)}},
+	})
+	if !protocol.Is(err, protocol.Conflict) {
+		t.Fatalf("a stale commit: %v, want conflict", err)
+	}
+	m.Close(ctx)
+
+	again := opened(t, file)
+	got, _ := again.Get(ctx, protocol.StateGetParams{Collection: "app-specs", Key: "r:s"})
+	if got.Version != second.Version || string(got.Value) != `2` {
+		t.Fatalf("after restart: %+v", got)
+	}
+	ev, _ := again.Read(ctx, protocol.EventsReadParams{Stream: "spec:r:s", Limit: 10})
+	if len(ev.Events) != 2 || ev.Events[1].Cursor != second.Cursors[1] {
+		t.Fatalf("events after restart: %+v", ev.Events)
+	}
+}

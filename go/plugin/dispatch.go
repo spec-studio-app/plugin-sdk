@@ -51,6 +51,9 @@ func (s *Server) dispatch(ctx context.Context, method string, raw json.RawMessag
 		}
 		return store.Put(ctx, p)
 
+	case protocol.MethodStateCommit:
+		return s.commit(ctx, raw)
+
 	case protocol.MethodStateDelete:
 		var p protocol.StateDeleteParams
 		if err := decode(raw, &p); err != nil {
@@ -230,6 +233,60 @@ func (s *Server) dispatch(ctx context.Context, method string, raw json.RawMessag
 		return hook.ContinueStream(ctx, p)
 	}
 	return nil, protocol.RPCError(protocol.RPCMethodNotFound, "The method %q does not exist.", method)
+}
+
+// commit checks the params of state.commit and calls the store's Commit.
+func (s *Server) commit(ctx context.Context, raw json.RawMessage) (any, error) {
+	// state.commit needs state and events: a store without both speaks 1.0 only.
+	committer, ok := s.p.Store.(Committer)
+	if !ok || !CanCommit(s.p.Store) {
+		return nil, protocol.RPCError(protocol.RPCMethodNotFound, "The plugin %s does not have state.commit. It speaks protocol 1.0 only.", s.p.Info.Name)
+	}
+	var p protocol.StateCommitParams
+	if err := decode(raw, &p); err != nil {
+		return nil, err
+	}
+	if err := checkDoc(p.Collection, p.Key); err != nil {
+		return nil, err
+	}
+	if err := protocol.CheckName("stream", p.Stream); err != nil {
+		return nil, err
+	}
+	if len(p.Value) == 0 {
+		return nil, protocol.RPCError(protocol.RPCInvalidParams, "The params have no value.")
+	}
+	if err := checkAttributes(p.Attributes); err != nil {
+		return nil, err
+	}
+	if p.Attributes == nil {
+		p.Attributes = protocol.Attributes{}
+	}
+	attrs, _ := json.Marshal(p.Attributes)
+	if err := s.checkSize("document", len(p.Value)+len(attrs)); err != nil {
+		return nil, err
+	}
+	if p.ExpectedVersion != nil && *p.ExpectedVersion == "" {
+		return nil, protocol.RPCError(protocol.RPCInvalidParams, "The expected version is empty. Use null to make a new document.")
+	}
+	if p.Events == nil {
+		p.Events = []protocol.NewEvent{}
+	}
+	for i, e := range p.Events {
+		if e.Type == "" || len(e.Type) > 200 {
+			return nil, protocol.RPCError(protocol.RPCInvalidParams, "Event %d has no type, or a type longer than 200 characters.", i)
+		}
+		if len(e.Data) == 0 {
+			p.Events[i].Data = json.RawMessage("null")
+		}
+		if err := s.checkSize("event", len(e.Data)+len(e.Type)); err != nil {
+			return nil, err
+		}
+	}
+	res, err := committer.Commit(ctx, p)
+	if err == nil && res.Cursors == nil {
+		res.Cursors = []string{}
+	}
+	return res, err
 }
 
 func (s *Server) wait(ctx context.Context, p protocol.WatchWaitParams) (any, error) {

@@ -49,6 +49,7 @@ const limits = {
 };
 const empty = { type: "object" };
 const obj = (required, properties) => ({ type: "object", required, properties });
+const newEvent = obj(["type", "data"], { type: { type: "string", minLength: 1, maxLength: 200 }, data: {}, at: time });
 const event = obj(["cursor", "type", "at", "data"], { cursor: version, type: { type: "string", minLength: 1, maxLength: 200 }, at: time, data: {} });
 const document = obj(["key", "attributes", "version", "updatedAt"], {
   key: name,
@@ -72,7 +73,7 @@ const methods = {
   },
   "plugin.handshake": {
     request: obj(["host", "protocolVersions", "settings"], {
-      host: obj(["kind", "version"], { kind: { enum: ["app", "relay", "test"] }, version: { type: "string", minLength: 1 } }),
+      host: obj(["kind", "version"], { kind: { enum: ["app", "relay", "cli", "test"] }, version: { type: "string", minLength: 1 } }),
       protocolVersions: { type: "array", items: protocolVersion, minItems: 1 },
       settings: { type: "object", additionalProperties: { type: "string" } },
     }),
@@ -84,6 +85,8 @@ const methods = {
       durable: { type: "boolean" },
       limits,
       session: { type: "string" },
+      // Protocol 1.1, optional: two plugin processes on the same data give the same storeId.
+      storeId: { type: "string", minLength: 1 },
     }),
   },
   "plugin.ping": {
@@ -128,13 +131,26 @@ const methods = {
     }),
     result: obj(["items", "cursor"], { items: { type: "array", items: document }, cursor: { type: ["string", "null"] } }),
   },
+  // Protocol 1.1: the document and its events in one atomic step. events can be empty.
+  "state.commit": {
+    request: obj(["collection", "key", "value", "expectedVersion", "stream", "events"], {
+      collection: name,
+      key: name,
+      value: {},
+      attributes,
+      expectedVersion: { anyOf: [version, { type: "null" }] },
+      stream: name,
+      events: { type: "array", items: newEvent },
+    }),
+    result: obj(["version", "updatedAt", "cursors"], { version, updatedAt: time, cursors: { type: "array", items: version } }),
+  },
   "events.append": {
     request: obj(["stream", "events"], {
       stream: name,
       events: {
         // An empty list is valid JSON for the schema; the plugin refuses it with `refused`.
         type: "array",
-        items: obj(["type", "data"], { type: { type: "string", minLength: 1, maxLength: 200 }, data: {}, at: time }),
+        items: newEvent,
       },
     }),
     result: obj(["cursors"], { cursors: { type: "array", items: version, minItems: 1 } }),

@@ -20,6 +20,16 @@ import (
 	"github.com/spec-studio-app/plugin-sdk/go/protocol"
 )
 
+// The memory store gives every capability and protocol 1.1.
+var (
+	_ plugin.Store         = (*memoryStore)(nil)
+	_ plugin.EventStore    = (*memoryStore)(nil)
+	_ plugin.BlobStore     = (*memoryStore)(nil)
+	_ plugin.Watcher       = (*memoryStore)(nil)
+	_ plugin.Committer     = (*memoryStore)(nil)
+	_ plugin.StoreIdentity = (*memoryStore)(nil)
+)
+
 // doc is one stored document.
 type doc struct {
 	Value      json.RawMessage     `json:"value"`
@@ -68,6 +78,8 @@ type memoryStore struct {
 	log     interface{ Error(string, ...any) }
 	// lock holds the data file's lock while the store is open.
 	lock *os.File
+	// storeID is the storeId of the handshake, set at Open.
+	storeID string
 }
 
 func newMemoryStore(dataFile *string) *memoryStore {
@@ -90,11 +102,21 @@ func (m *memoryStore) file() string {
 // Durable is true with a data file.
 func (m *memoryStore) Durable() bool { return m.file() != "" }
 
+// StoreID names the data: the data file, or this process when the data
+// stays in memory (no other process can read it).
+func (m *memoryStore) StoreID() string { return m.storeID }
+
 func (m *memoryStore) Open(ctx context.Context, o plugin.OpenOptions) error {
 	m.log = o.Log
 	path := m.file()
 	if path == "" {
+		m.storeID = fmt.Sprintf("memory:process-%d-%d", os.Getpid(), time.Now().UnixNano())
 		return nil
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		m.storeID = "memory:" + abs
+	} else {
+		m.storeID = "memory:" + path
 	}
 	// One process at a time: the compare and swap is atomic in this process only.
 	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
@@ -251,6 +273,70 @@ func (m *memoryStore) Put(ctx context.Context, p protocol.StatePutParams) (proto
 		return protocol.StatePutResult{}, err
 	}
 	return protocol.StatePutResult{Version: d.Version, UpdatedAt: d.UpdatedAt}, nil
+}
+
+// Commit checks the version, writes the document and appends the events in
+// one step under the lock, and writes the data file once. A failed write of
+// the data file undoes both changes.
+func (m *memoryStore) Commit(ctx context.Context, p protocol.StateCommitParams) (protocol.StateCommitResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	col := m.docs[p.Collection]
+	cur := col[p.Key]
+	if p.ExpectedVersion == nil && cur != nil {
+		return protocol.StateCommitResult{}, protocol.ConflictError(&cur.Version)
+	}
+	if p.ExpectedVersion != nil && (cur == nil || cur.Version != *p.ExpectedVersion) {
+		if cur == nil {
+			return protocol.StateCommitResult{}, protocol.ConflictError(nil)
+		}
+		return protocol.StateCommitResult{}, protocol.ConflictError(&cur.Version)
+	}
+	if col == nil {
+		col = map[string]*doc{}
+		m.docs[p.Collection] = col
+	}
+	now := time.Now().UTC()
+	d := &doc{Value: append(json.RawMessage(nil), p.Value...), Attributes: copyAttrs(p.Attributes), Version: m.nextVersion(), UpdatedAt: now}
+	col[p.Key] = d
+
+	st := m.streams[p.Stream]
+	newStream := st == nil
+	if newStream && len(p.Events) > 0 {
+		st = &stream{Run: 1}
+		m.streams[p.Stream] = st
+	}
+	var oldSeq int64
+	var oldLen int
+	if st != nil {
+		oldSeq, oldLen = st.Seq, len(st.Events)
+	}
+	cursors := make([]string, 0, len(p.Events))
+	for _, e := range p.Events {
+		st.Seq++
+		at := now
+		if e.At != nil {
+			at = e.At.UTC()
+		}
+		se := storedEvent{Run: st.Run, Seq: st.Seq, Type: e.Type, At: at, Data: append(json.RawMessage(nil), e.Data...)}
+		st.Events = append(st.Events, se)
+		cursors = append(cursors, cursorOf(se))
+	}
+	if err := m.commit(func() {
+		if cur == nil {
+			delete(col, p.Key)
+		} else {
+			col[p.Key] = cur
+		}
+		if newStream {
+			delete(m.streams, p.Stream)
+		} else if st != nil {
+			st.Seq, st.Events = oldSeq, st.Events[:oldLen]
+		}
+	}); err != nil {
+		return protocol.StateCommitResult{}, err
+	}
+	return protocol.StateCommitResult{Version: d.Version, UpdatedAt: d.UpdatedAt, Cursors: cursors}, nil
 }
 
 func (m *memoryStore) Delete(ctx context.Context, p protocol.StateDeleteParams) (protocol.StateDeleteResult, error) {

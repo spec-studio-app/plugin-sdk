@@ -2,7 +2,9 @@
 // gives state only, or state and events (--events, with no test hook). With
 // --broken-cas it accepts a write with a stale version. With --secret it
 // declares a secret setting and logs every setting at open. With --watch it
-// gives watch on documents too, with no events.
+// gives watch on documents too, with no events. With --broken-commit it gives
+// state.commit (protocol 1.1), but appends the events before it checks the
+// version, so a conflict leaves the events in the stream.
 package main
 
 import (
@@ -185,6 +187,28 @@ func (s *eventsStore) DeleteStream(ctx context.Context, p protocol.EventsDeleteP
 	return protocol.EventsDeleteResult{Deleted: had}, nil
 }
 
+// brokenCommitStore gives state.commit that is not atomic: it appends the
+// events first, then writes the document with the version check.
+type brokenCommitStore struct {
+	*eventsStore
+}
+
+func (s *brokenCommitStore) Commit(ctx context.Context, p protocol.StateCommitParams) (protocol.StateCommitResult, error) {
+	var cursors []string
+	if len(p.Events) > 0 {
+		r, err := s.Append(ctx, protocol.EventsAppendParams{Stream: p.Stream, Events: p.Events})
+		if err != nil {
+			return protocol.StateCommitResult{}, err
+		}
+		cursors = r.Cursors
+	}
+	put, err := s.Put(ctx, protocol.StatePutParams{Collection: p.Collection, Key: p.Key, Value: p.Value, Attributes: p.Attributes, ExpectedVersion: p.ExpectedVersion})
+	if err != nil {
+		return protocol.StateCommitResult{}, err
+	}
+	return protocol.StateCommitResult{Version: put.Version, UpdatedAt: put.UpdatedAt, Cursors: cursors}, nil
+}
+
 // watchStore gives watch on documents, with no events: a wait on a stream
 // gets refused.
 type watchStore struct {
@@ -221,6 +245,7 @@ func main() {
 	secret := flag.Bool("secret", false, "declare a secret setting")
 	events := flag.Bool("events", false, "give the events capability")
 	watch := flag.Bool("watch", false, "give the watch capability on documents, with no events")
+	brokenCommit := flag.Bool("broken-commit", false, "give events and a state.commit that is not atomic")
 	// Parse the fixture's flags now: they choose the store.
 	flag.String("listen", "", "")
 	flag.String("token", "", "")
@@ -236,6 +261,9 @@ func main() {
 	}
 	if *watch {
 		store = &watchStore{stateStore: state}
+	}
+	if *brokenCommit {
+		store = &brokenCommitStore{eventsStore: &eventsStore{stateStore: state, streams: map[string][]protocol.Event{}}}
 	}
 	var settings []protocol.Setting
 	if *secret {

@@ -10,12 +10,14 @@ This repo defines how Spec Studio keeps its data in a **backend plugin**. It has
 
 ## What a backend plugin is
 
-Spec Studio has two hosts that keep data: the **relay** (a remote MCP server that you host) and the **app** (on your Mac). A backend plugin is a separate program that keeps this data for a host:
+Spec Studio has two hosts that keep data: the **relay** (a remote MCP server that you host) and the **app** (on your Mac, with its `studio` CLI). A backend plugin is a separate program that keeps this data for a host:
 
 - **state**: one JSON document for each spec, each desk and the relay config, with a version for each write.
 - **events**: the ordered log of each spec. History and replay use it.
 - **blobs**: files by SHA-256, for example terminal recordings and document snapshots.
 - **watch**: a wait for the next change, for long polls.
+
+Protocol 1.1 adds `state.commit`: one atomic write of a document and its events. The app and the CLI need it, so that a spec's state and its activity never disagree.
 
 The host keeps all Spec Studio rules. A plugin only keeps data, so a plugin is small. [`PROTOCOL.md`](PROTOCOL.md#2-where-the-rules-live) gives the reasons.
 
@@ -40,7 +42,7 @@ You can write a plugin in any language that reads and writes JSON lines. In Go, 
    go get github.com/spec-studio-app/plugin-sdk/go
    ```
 
-2. Write a store. It must implement `plugin.StateStore`, `Open` and `Close`. Implement `plugin.EventStore`, `plugin.BlobStore` or `plugin.Watcher` to give more capabilities:
+2. Write a store. It must implement `plugin.StateStore`, `Open` and `Close`. Implement `plugin.EventStore`, `plugin.BlobStore` or `plugin.Watcher` to give more capabilities. Implement `plugin.EventStore` and `plugin.Committer` to speak protocol 1.1, and `plugin.StoreIdentity` to give the `storeId` of the handshake:
 
    ```go
    package main
@@ -56,7 +58,7 @@ You can write a plugin in any language that reads and writes JSON lines. In Go, 
 
    func (s *store) Open(ctx context.Context, o plugin.OpenOptions) error {
    	// o.Settings["address"] has a value: the SDK checked it.
-   	// o.Host.Kind is "app", "relay" or "test": use it for a default.
+   	// o.Host.Kind is "app", "relay", "cli" or "test": use it for a default.
    	return nil
    }
    func (s *store) Close(ctx context.Context) error { return nil }
@@ -68,6 +70,12 @@ You can write a plugin in any language that reads and writes JSON lines. In Go, 
    }
    func (s *store) Delete(ctx context.Context, p protocol.StateDeleteParams) (protocol.StateDeleteResult, error) { /* … */ }
    func (s *store) List(ctx context.Context, p protocol.StateListParams) (protocol.StateListResult, error) { /* … */ }
+
+   // Protocol 1.1 (with plugin.EventStore): check p.ExpectedVersion, write the
+   // document and append p.Events in one atomic step, or do none of them.
+   func (s *store) Commit(ctx context.Context, p protocol.StateCommitParams) (protocol.StateCommitResult, error) { /* … */ }
+   // Two processes on the same data give the same ID.
+   func (s *store) StoreID() string { return "mine:" + s.address }
 
    func main() {
    	plugin.Main(plugin.Plugin{
@@ -87,7 +95,7 @@ You can write a plugin in any language that reads and writes JSON lines. In Go, 
 
 Obey the [rules for plugin authors](PROTOCOL.md#13-rules-for-plugin-authors). The most important rules:
 
-- Make each compare and swap atomic.
+- Make each compare and swap atomic. In `state.commit`, a failed check writes no document and no event.
 - Keep every event of a stream until the host deletes the stream, also when your storage splits the stream into parts.
 - Never log the value of a secret setting. The SDK redacts the secrets in its log and in error messages; do not write them to stderr yourself.
 
@@ -108,7 +116,7 @@ plugin-conformance --setting address=localhost:7233 --setting api_key="$KEY" -- 
 
 It prints each test as `pass`, `fail` (with the reason) or `skip`, and exits with code 1 when a test fails. It tests only the capabilities that your plugin declares. `--run <pattern>` runs some tests only; `-v` shows the plugin's stderr.
 
-Run it in your plugin's CI. A plugin that declares the `continueStream` test hook also gets the test of a read across a continued run. A durable plugin also gets the test that the data stays after a restart.
+Run it in your plugin's CI. A plugin that chooses protocol 1.1 in the handshake also gets the tests of `state.commit` (`commit-*`), a conflict and a race included. A plugin that declares the `continueStream` test hook also gets the test of a read across a continued run. A durable plugin also gets the test that the data stays after a restart.
 
 ## Use a plugin from a host (TypeScript)
 

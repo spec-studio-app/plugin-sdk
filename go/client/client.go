@@ -436,6 +436,18 @@ func (c *Client) List(ctx context.Context, p protocol.StateListParams) (protocol
 	return r, c.Call(ctx, protocol.MethodStateList, p, &r)
 }
 
+// Commit calls state.commit (protocol 1.1). It writes the document and
+// appends the events in one atomic step. A nil p.Events sends an empty list.
+// On a version mismatch the error is a *protocol.Error with the code
+// conflict and the stored version in Data.Version.
+func (c *Client) Commit(ctx context.Context, p protocol.StateCommitParams) (protocol.StateCommitResult, error) {
+	if p.Events == nil {
+		p.Events = []protocol.NewEvent{}
+	}
+	var r protocol.StateCommitResult
+	return r, c.Call(ctx, protocol.MethodStateCommit, p, &r)
+}
+
 // Append calls events.append.
 func (c *Client) Append(ctx context.Context, stream string, events ...protocol.NewEvent) (protocol.EventsAppendResult, error) {
 	if events == nil {
